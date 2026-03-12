@@ -5,8 +5,7 @@ use std::{collections::HashMap, num::NonZeroU8};
 use zetarune::{
     ctx::Ctx,
     objs::{
-        AniEvent, AniSheet, Animation, Callbacks, Collider, ColliderType, Color, EventName, Object,
-        ObjectState, ObjectStateKey, Offset2, Room, Sprite, Vec2, World,
+        AniEvent, AniSheet, Animation, Callbacks, Collider, ColliderType, Color, EventName, LanguageData, Object, ObjectState, ObjectStateKey, Offset2, Room, Sprite, Vec2, World
     },
 };
 
@@ -53,6 +52,7 @@ fn main() {
             },
             off: Offset2::ZERO,
         }],
+        static_body: true,
         sheet: Some(sheet),
         state: ObjectState::new(),
         callbacks: Some(Callbacks::new()),
@@ -124,6 +124,7 @@ fn main() {
             },
             off: Offset2::ZERO,
         }],
+        static_body: false,
         sheet: Some(sheet),
         state: ObjectState::new(),
         callbacks: Some(Callbacks::new()),
@@ -144,17 +145,24 @@ fn main() {
             objects: vec![obj1, obj2],
             callbacks: None,
             state: ObjectState::new(),
+            entrypoints: HashMap::new(),
         },
     );
+
+    let lang = ctx.add_lang("n/a".to_string(), LanguageData { strings: HashMap::new() });
 
     let world = World::new(
         ctx,
         room,
         vec![],
+        vec![],
         None,
         ObjectState::new(),
-        Vec2::ZERO,
+        obj1,
         HashMap::new(),
+        None,
+        lang,
+        "example.zetarune.engine.simple".to_string()
     );
 
     zetarune::rt::main("Zetarune Test", false, world);

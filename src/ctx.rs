@@ -37,7 +37,13 @@ macro_rules! ctx_impl_default_ref {
                 pub fn default(ctx: &mut Ctx) -> Self {
                     static ID_NUM: AtomicUsize = AtomicUsize::new(0);
 
-                    ctx.[< add_ $prop >] (format!(concat!("__", stringify!($prop), "_{}"), ID_NUM.fetch_add(1, Ordering::Relaxed)), $($(<$t as Default>::default()),+)?)
+                    ctx.[< add_ $prop >] (
+                        format!(
+                            concat!("__", stringify!($prop), "_{}"),
+                            ID_NUM.fetch_add(1, Ordering::Relaxed)
+                        ),
+                        $($(<$t as Default>::default()),+)?
+                    )
                 }
             }
         }
@@ -146,12 +152,16 @@ macro_rules! define_ctx {
                     }
                     #[doc = concat!("Add a new `", stringify!($prop),
                         "` or find an already existing one with the same value
-                        and return a [`", stringify!($name), "`] reference to it.")]
+                        and return a [`", stringify!($name), "`] reference to it. ID CANNOT contain a `.`, or the function will panic.")]
+                    #[track_caller]
                     pub fn [< add_ $prop >] (
                         &mut self,
                         id: String
                         $($(, $prop2: ctx_get_borrowed_or_owned!(owned $unwrapped_t2 $(: $owned_t2)? $(: $default)?))*)?
                     ) -> $name {
+                        if id.contains('.') {
+                            panic!("ID of object cannot contain .")
+                        }
                         if !self.[< $prop _id_map >].contains_key(&id) {
                             let mut i = self.[< $prop _ids>].len();
 
@@ -231,4 +241,9 @@ define_ctx! {
     ActionRef: action,
     AudioRef: audio; audio => Audio,
     FontRef: font; font => Font,
+    /// An entrypoint to a room.
+    EntryRef: entrypoint; entry_room => RoomRef,
+    TextRef: text; text => DisplayedText,
+    LocalTextRef: local_text,
+    LanguageRef: lang; lang => LanguageData,
 }

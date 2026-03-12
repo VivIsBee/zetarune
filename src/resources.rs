@@ -20,22 +20,25 @@ pub trait Provider {
     fn info(&self) -> ProviderInfo;
 }
 
-pub struct StaticAssetProvider {
+pub struct UncompressedStaticAssetProvider {
     sprites: &'static [(&'static str, Sprite)],
 }
 
-impl StaticAssetProvider {
+impl UncompressedStaticAssetProvider {
     pub fn new(sprites: &'static [(&'static str, Sprite)]) -> Self {
         Self { sprites }
     }
 }
 
-impl Provider for StaticAssetProvider {
+impl Provider for UncompressedStaticAssetProvider {
     type Error = Infallible;
     fn info(&self) -> ProviderInfo {
         ProviderInfo {
-            name: "static asset provider".to_string(),
-            desc: Some("loads assets provided statically at compile time".to_string()),
+            name: "uncompressed static asset provider".to_string(),
+            desc: Some(
+                "loads uncompressed assets provided statically at compile time, counterpart to CompressedStaticAssetProvider"
+                .to_string()
+            ),
         }
     }
     fn present(&mut self) -> Result<(), Self::Error> {

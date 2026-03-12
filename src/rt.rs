@@ -4,6 +4,7 @@ use std::{
     collections::HashSet,
     fmt::Debug,
     mem::ManuallyDrop,
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -17,9 +18,12 @@ use macroquad::{
 };
 
 use crate::{
-    ctx::{AudioRef, ObjectRef, RoomRef},
+    ctx::{AudioRef, EntryRef, ObjectRef, RoomRef},
     error,
-    objs::{AniEvent, Event, EventArgs, EventResult, ObjectStateKey, Offset2, Sprite, Vec2, World},
+    objs::{
+        AniEvent, DisplayedText, Event, EventArgs, EventResult, Font, LanguageData, ObjectStateKey,
+        Offset2, SealedRoomTransition, Sprite, Vec2, World,
+    },
     warn,
 };
 
@@ -156,6 +160,11 @@ pub(crate) enum InternalEvent {
     PlayAudio(AudioRef),
     PauseAudio(AudioRef),
     StopAudio(AudioRef),
+    RoomTransition(EntryRef),
+    /// Save all data to the provided save index.
+    Save(u16),
+    /// Load all data from the provided save index.
+    Load(u16),
 }
 
 fn send_event_all<'a, F: FnMut() -> Event<'a> + 'a>(
@@ -211,6 +220,20 @@ fn send_event_all<'a, F: FnMut() -> Event<'a> + 'a>(
             object_callback(world, None, *obj_r);
         }
     }
+}
+
+pub fn get_data_path(world: &World) -> PathBuf {
+    dirs::config_dir()
+        .or_else(std::env::home_dir)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or(PathBuf::from("."))
+        .join(&world.game_id)
+}
+
+pub fn get_save_path(world: &World, i: u16) -> PathBuf {
+    let data_path = get_data_path(world);
+
+    data_path.join(&format!("save-{i:05}.zrsav"))
 }
 
 async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
@@ -273,6 +296,70 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
                     warn!("attempted to stop audio despite being already stopped");
                 }
             }
+            InternalEvent::RoomTransition(entry) => {
+                if let Some(trans) = world.room_transition {
+                    let from = world.current_room;
+                    let to = *world.ctx.get_entry_room(entry);
+                    world.post_event(
+                        EventTarget::Object(trans, Some(world.current_room)),
+                        move || Event::RoomTransition {
+                            _sealed: SealedRoomTransition,
+                            from,
+                            to,
+                            entry,
+                        },
+                    );
+                }
+                for oref in &world.ctx.get_room(world.current_room).objects {
+                    let oref = *oref;
+                    world.event_queue.push((
+                        EventTarget::Object(oref, Some(world.current_room)),
+                        Box::new(|| Event::Unload),
+                    ));
+                }
+
+                world.current_room = *world.ctx.get_entry_room(entry);
+
+                let room = world.ctx.get_room(world.current_room);
+                let entry_loc = room.entrypoints[&entry];
+
+                for oref in &world.player {
+                    let oref = *oref;
+                    world
+                        .ctx
+                        .get_mut_object(oref)
+                        .state
+                        .set(ObjectStateKey::Pos, entry_loc);
+                }
+
+                for oref in &world.ctx.get_room(world.current_room).objects {
+                    let oref = *oref;
+                    world.event_queue.push((
+                        EventTarget::Object(oref, Some(world.current_room)),
+                        Box::new(|| Event::Load),
+                    ));
+                }
+            }
+            InternalEvent::Save(i) => {
+                let loc = get_save_path(&*world, i);
+
+                let bytes = world.save_to_bytes();
+
+                std::fs::write(loc, bytes).unwrap();
+            }
+            InternalEvent::Load(i) => {
+                let loc = get_save_path(&*world, i);
+
+                if !loc.exists() {
+                    panic!(
+                        "Attempted to load non-existant save; check for existence before attempting to load with `world.save_exists`"
+                    )
+                }
+
+                let bytes = std::fs::read(loc).unwrap();
+
+                world.load_from_bytes(&bytes);
+            }
         }
     }
 
@@ -298,9 +385,6 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
 
     let mut collided = HashSet::new(); // needed to prevent double-reporting each collision
     for (obj1, room1) in &objs {
-        if room1.is_none() {
-            continue;
-        }
         let obj1_colliders = &world.ctx.get_object(*obj1).collider;
         let obj1_pos = if let Some(pos) = world.ctx.get_object(*obj1).get_position() {
             pos
@@ -311,7 +395,7 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
         for (obj2, room2) in &objs {
             let mut objs = [*obj1, *obj2];
             objs.sort(); // needed to prevent double-reporting each collision
-            if room2.is_none() || *obj1 == *obj2 || *room1 != *room2 || collided.contains(&objs) {
+            if *obj1 == *obj2 || collided.contains(&objs) {
                 continue;
             }
 
@@ -333,7 +417,7 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
                             Box::new(move || Event::Collide { other: obj2 }),
                         ));
                         world.event_queue.push((
-                            EventTarget::Object(obj2, *room1),
+                            EventTarget::Object(obj2, *room2),
                             Box::new(move || Event::Collide { other: obj1 }),
                         ));
                         collided.insert(objs);
@@ -345,41 +429,128 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
         }
     }
 
+    if timer.as_millis() % (1000 / 20) == 0 {
+        send_event_all(
+            || Event::Tick(delta),
+            world,
+            &objs,
+            |_, _| {},
+            |_, _, _| {},
+            |_, _, _| {},
+        );
+    }
+
     for (target, mut event) in world.event_queue.drain(..).collect::<Vec<_>>() {
         match target {
             EventTarget::Object(obj_r, room) => {
-                if let Some(callbacks) = world.ctx.get_object(obj_r).callbacks.clone() {
-                    let ev = event();
+                let ev = event();
 
-                    let is_disable_default = matches!(ev, Event::AniContinueEvent);
+                let is_ani_continue = matches!(ev, Event::AniContinueEvent);
+                let is_collision = match ev {
+                    Event::Collide { other } => Some(other),
+                    _ => None,
+                };
 
-                    let res = callbacks.trigger(
+                let res = if let Some(callbacks) = world.ctx.get_object(obj_r).callbacks.clone() {
+                    callbacks.trigger(
                         ev,
                         EventArgs {
                             room: room,
                             obj: Some(obj_r),
                             world,
                         },
-                    );
-                    if is_disable_default && res != Some(EventResult::DisableDefault) {
-                        let obj = world.ctx.get_object(obj_r);
-                        if let Some(ani_sheet_ref) = obj.sheet
-                            && obj.is_processing()
-                        {
-                            let sheet = world.ctx.get_sheet(ani_sheet_ref);
-                            if let Some(ani) = obj.get_ani() {
-                                let ani = world.ctx.get_animation(sheet.anis[&ani]);
+                    )
+                } else {
+                    None
+                };
 
-                                let frame = obj.get_frame().unwrap_or(0);
-                                if matches!(&ani.timeline[frame], AniEvent::PausePoint) {
-                                    world
-                                        .ctx
-                                        .get_mut_object(obj_r)
-                                        .state
-                                        .set(ObjectStateKey::AniFrame, frame + 1);
-                                }
+                if is_ani_continue && res != Some(EventResult::DisableDefault) {
+                    let obj = world.ctx.get_object(obj_r);
+                    if let Some(ani_sheet_ref) = obj.sheet
+                        && obj.is_processing()
+                    {
+                        let sheet = world.ctx.get_sheet(ani_sheet_ref);
+                        if let Some(ani) = obj.get_ani() {
+                            let ani = world.ctx.get_animation(sheet.anis[&ani]);
+
+                            let frame = obj.get_frame().unwrap_or(0);
+                            if matches!(&ani.timeline[frame], AniEvent::PausePoint) {
+                                world
+                                    .ctx
+                                    .get_mut_object(obj_r)
+                                    .state
+                                    .set(ObjectStateKey::AniFrame, frame + 1);
                             }
                         }
+                    }
+                } else if let Some(other_r) = is_collision
+                    && res != Some(EventResult::DisableDefault)
+                {
+                    let obj_static_body = world.ctx.get_object(obj_r).static_body;
+                    let other_static_body = world.ctx.get_object(other_r).static_body;
+
+                    let pos1 = if let Some(pos) = world.ctx.get_object(obj_r).get_position() {
+                        pos
+                    } else {
+                        warn!(
+                            "please don't remove the position of colliding objects and still return EventResult::Default - it fucks with default collision"
+                        );
+                        continue;
+                    };
+                    let pos2 = if let Some(pos) = world.ctx.get_object(other_r).get_position() {
+                        pos
+                    } else {
+                        warn!(
+                            "please don't remove the position of colliding objects and still return EventResult::Default - it fucks with default collision"
+                        );
+                        continue;
+                    };
+
+                    let mut offset = None;
+
+                    'collider1_loop: for collider1 in &world.ctx.get_object(obj_r).collider {
+                        for collider2 in &world.ctx.get_object(other_r).collider {
+                            if let Some(overlap) = collider1.outside_overlap(pos1, *collider2, pos2)
+                            {
+                                offset = Some(overlap);
+                                break 'collider1_loop;
+                            }
+                        }
+                    }
+                    if offset.is_none() {
+                        warn!(
+                            "please don't move colliding objects and still return EventResult::Default - it fucks with default collision"
+                        );
+                        continue;
+                    }
+                    let offset = offset.unwrap();
+
+                    if (!obj_static_body) && (!other_static_body) {
+                        world
+                            .ctx
+                            .get_mut_object(obj_r)
+                            .state
+                            .set(ObjectStateKey::Pos, pos1 - (offset / 2.0));
+                        world
+                            .ctx
+                            .get_mut_object(other_r)
+                            .state
+                            .set(ObjectStateKey::Pos, pos2 + (offset / 2.0));
+                    } else if obj_static_body && (!other_static_body) {
+                        world
+                            .ctx
+                            .get_mut_object(other_r)
+                            .state
+                            .set(ObjectStateKey::Pos, pos2 + offset);
+                    } else if (!obj_static_body) && other_static_body {
+                        println!("{pos1:?}, {offset:?}, {:?}", pos1 + offset);
+                        world
+                            .ctx
+                            .get_mut_object(obj_r)
+                            .state
+                            .set(ObjectStateKey::Pos, pos1 + offset);
+                    } else {
+                        println!("aaaa {obj_static_body}+{other_static_body}")
                     }
                 }
             }
@@ -413,18 +584,51 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
         }
     }
 
-    if timer.as_millis() % (1000 / 20) == 0 {
-        send_event_all(
-            || Event::Tick(delta),
-            world,
-            &objs,
-            |_, _| {},
-            |_, _, _| {},
-            |_, _, _| {},
-        );
+    let draw_ctx = Arc::new(Mutex::new(DrawContext::new(
+        world
+            .ctx
+            .get_object(world.camera_obj)
+            .get_position()
+            .unwrap()
+            - (screen_size / 2.0),
+        screen_size,
+        world
+            .ctx
+            .fonts
+            .iter()
+            .filter(|v| v.is_some())
+            .cloned()
+            .map(|v| v.unwrap())
+            .collect(),
+        world
+            .ctx
+            .sprites
+            .iter()
+            .filter(|v| v.is_some())
+            .cloned()
+            .map(|v| v.unwrap())
+            .collect(),
+        world.ctx.get_lang(world.lang).clone(),
+    )));
+
+    for text in &world.text {
+        draw_ctx
+            .lock()
+            .unwrap()
+            .draw_text(world.ctx.get_text(*text));
     }
 
-    let draw_ctx = Arc::new(Mutex::new(DrawContext::new(world.camera_pos, screen_size)));
+    if world
+        .ctx
+        .get_object(world.camera_obj)
+        .get_position()
+        .is_none()
+    {
+        error!("camera doesn't have a position; skipping rendering sprites this frame");
+
+        *timer += delta;
+        return;
+    }
 
     send_event_all(
         || Event::Render(delta, draw_ctx.clone()),
@@ -451,6 +655,8 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
                     && let Some(pos) = obj.get_position()
                     && obj.get_visible().unwrap_or(true)
                 {
+                    println!("{obj_r:?}: {pos:?}");
+
                     let sheet = world.ctx.get_sheet(ani_sheet_ref);
                     if let Some(ani) = obj.get_ani()
                         && let Some(frame) = obj.get_frame()
@@ -565,21 +771,30 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
 /// A context needed to draw the screen. Technically could be bypassed, but
 /// please don't :c
 ///
-/// Everything is in world coordinates;
-pub struct DrawContext(Vec2, Offset2);
+/// Everything is in world coordinates, except for specific scenarios like text.
+pub struct DrawContext(Vec2, Offset2, Vec<Font>, Vec<Sprite>, LanguageData);
 
 impl DrawContext {
-    fn new(camera_pos: Vec2, screen_size: Offset2) -> Self {
-        Self(camera_pos, screen_size)
+    fn new(
+        camera_pos: Vec2,
+        screen_size: Offset2,
+        fonts: Vec<Font>,
+        sprites: Vec<Sprite>,
+        lang: LanguageData,
+    ) -> Self {
+        Self(camera_pos, screen_size, fonts, sprites, lang)
     }
     pub fn draw_sprite(&mut self, sprite: Sprite, pos: Vec2, rot: f32) {
-        let top_left = pos - self.0;
-
+        self.draw_sprite_screen(sprite, (pos - self.0).into(), rot);
+    }
+    fn draw_sprite_screen(&self, sprite: Sprite, top_left: Vec2, rot: f32) {
         let bottom_right = top_left + sprite.get_size();
 
         if bottom_right < Vec2::ZERO || top_left > self.1.into() {
             return;
         }
+
+        let center = top_left - (sprite.get_size() / 2.0);
 
         let mut data = ManuallyDrop::new(sprite.data.clone());
 
@@ -595,8 +810,8 @@ impl DrawContext {
 
         draw_texture_ex(
             &tex,
-            top_left.x,
-            top_left.y,
+            center.x,
+            center.y,
             WHITE,
             DrawTextureParams {
                 rotation: rot,
@@ -604,5 +819,25 @@ impl DrawContext {
                 ..Default::default()
             },
         );
+    }
+    pub fn draw_text(&mut self, text: &DisplayedText) {
+        let mut pos = Offset2::ZERO;
+        let font = &self.2[text.font.index];
+        for ch in self.4.strings[&text.contents].chars() {
+            match ch {
+                '\r' => {}
+                '\n' => {
+                    pos.x = 0.0;
+                    pos.y += font.line_height as f32;
+                }
+                _ => {
+                    let (sprite_r, x_off) = font.sprites[font.char_index_map[&ch]];
+                    let sprite = self.3[sprite_r.index].clone();
+                    self.draw_sprite_screen(sprite, text.loc + pos, text.char_rot);
+
+                    pos.x += x_off as f32;
+                }
+            }
+        }
     }
 }

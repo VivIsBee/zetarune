@@ -24,7 +24,7 @@ macro_rules! log {
                 Fatal => "\x1b[31;1m[FATAL] ",
             });
             eprint!("\x1b[0m");
-            eprint!($($arg)*);
+            eprintln!($($arg)*);
         }
     };
 }
