@@ -6,3 +6,5 @@ pub mod rt;
 #[macro_use]
 pub mod log;
 pub mod resources;
+
+pub use zetarune_proc::compressed_sprites;

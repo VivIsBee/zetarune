@@ -1,22 +1,16 @@
 [package]
-name = "zetarune"
+name = "zetarune-proc"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-derive_more = { version = "2.1.1", features = ["debug", "display"] }
-dirs = "6.0.0"
-gilrs = "0.11.1"
 image = "0.25.10"
-libgm = { git = "https://github.com/BioTomateDE/LibGM", version = "0.5.0-alpha" }
-macroquad = "0.4.14"
-paste = "1.0.15"
-postcard = { version = "1.1.3", features = ["use-std"] }
-qoi = { git = "https://github.com/aldanor/qoi-rust", version = "0.4.1" }
-rfd = "0.17.2"
-rodio = "0.22.2"
-serde = { version = "1.0.228", features = ["derive"] }
-zetarune-proc = { path = "zetarune-proc" }
+proc-macro2 = { version = "1.0.106", features = ["span-locations"] }
+quote = "1.0.45"
+syn = "2.0.117"
+
+[lib]
+proc-macro = true
 
 [lints.clippy]
 missing_docs_in_private_items = "warn"

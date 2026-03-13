@@ -116,7 +116,7 @@ impl Vec2 {
     pub fn dist(self, other: Vec2) -> f32 {
         self.dist_sq(other).sqrt()
     }
-    pub fn clamp(self, low: Vec2, high: Vec2) -> Vec2 {
+    pub const fn clamp(self, low: Vec2, high: Vec2) -> Vec2 {
         Vec2 {
             x: self.x.clamp(low.x, high.x),
             y: self.y.clamp(low.y, high.y),
@@ -878,6 +878,8 @@ pub enum ObjectStateKey {
     #[doc(hidden)]
     AniFrameTimer,
     Playing,
+    /// Not touched by the engine, used by the component library
+    UIFocus,
     Other(String),
 }
 
@@ -944,6 +946,7 @@ impl_obj_state_key!(
     "_zr.pla" => Playing,
     "_zr.aft" => AniFrameTimer,
     "_zr.zlr" => ZLayer,
+    "_zr.uif" => UIFocus,
 );
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -1664,6 +1667,24 @@ impl Sprite {
             y: self.height as f32,
         }
     }
+    pub fn slice(&self, loc: Vec2, size: Offset2) -> Option<Sprite> {
+        if loc.x + size.x > self.width as f32 || loc.y + size.y > self.height as f32 {
+            return None;
+        }
+        let mut region = Vec::with_capacity(size.x as usize * size.y as usize);
+
+        for row in loc.y as usize..(loc.y + size.y) as usize {
+            let start = row * self.width as usize + loc.x as usize;
+            let end = start + size.x as usize;
+            region.extend_from_slice(&self.data[start..end]);
+        }
+
+        Some(Sprite {
+            width: size.x as u16,
+            height: size.y as u16,
+            data: region,
+        })
+    }
 }
 
 impl Index<(u16, u16)> for Sprite {
@@ -1682,13 +1703,23 @@ impl IndexMut<(u16, u16)> for Sprite {
 #[derive(derive_more::Debug)]
 pub struct Audio {
     #[debug("{{opaque source object}}")]
-    pub source: Option<Box<dyn Source + Send + 'static>>,
+    pub(crate) source: Option<Box<dyn Source + Send + Sync + 'static>>,
     /// The 3D location of the audio source where (0, 0, 0) is the listener with
     /// the left and right ear 0.1 offset from the center in the X axis.
     #[debug("(x: {}, y: {}, z: {})", loc.0, loc.1, loc.2)]
     pub loc: (f32, f32, f32),
     #[debug(skip)]
     pub(crate) player: Option<SpatialPlayer>,
+}
+
+impl Audio {
+    pub fn new(source: Box<dyn Source + Send + Sync + 'static>, loc: (f32, f32, f32)) -> Self {
+        Self {
+            source: Some(source),
+            loc,
+            player: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

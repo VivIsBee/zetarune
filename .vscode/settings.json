@@ -1,3 +1,7 @@
 {
-    "git.enabled": false
+    "git.enabled": false,
+    "rust-analyzer.linkedProjects": [
+        "Cargo.toml",
+        "zetarune-proc/Cargo.toml"
+    ]
 }

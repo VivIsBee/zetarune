@@ -72,7 +72,9 @@ macro_rules! define_ctx {
                     pub(crate) [< $prop _ids >]:
                         Vec<Option<String>>,
                     pub(crate) [< $prop _id_map >]:
-                        HashMap<String, usize>
+                        HashMap<String, usize>,
+                    pub(crate) [< $prop _placeholder >]:
+                        Vec<bool>
                     $(
                         , $(
                             pub(crate) [< $prop2 s >]:
@@ -162,6 +164,51 @@ macro_rules! define_ctx {
                         if id.contains('.') {
                             panic!("ID of object cannot contain .")
                         }
+                        if !self.[< $prop _id_map >].contains_key(&id) || self.[< $prop _placeholder >][self.[< $prop _id_map >][&id]]  {
+                            let mut i = self.[< $prop _ids>].len();
+
+                            for (c_i, id) in self.[< $prop _ids >].iter().enumerate() {
+                                if id.is_none() {
+                                    i = c_i;
+                                    break;
+                                }
+                            }
+
+                            if i >= self.[< $prop _ids>].len() {
+                                self.[< $prop _ids >].push(Some(id.clone()));
+                                self.[< $prop _placeholder >].push(false);
+                            } else {
+                                self.[< $prop _ids >][i] = Some(id.clone());
+                                self.[< $prop _placeholder >][i] = false;
+                            }
+
+                            self.[< $prop _id_map >]
+                                .insert(id.clone(), i);
+                            $(
+                                $(
+                                    if i >= self.[< $prop2 s>].len() {
+                                        self.[< $prop2 s >].push(Some($prop2));
+                                    } else {
+                                        self.[< $prop2 s >][i] = Some($prop2);
+                                    }
+                                );*
+                            )?
+                        }
+                        $name {
+                            index: (*self.[< $prop _id_map >].get(&id).unwrap())
+                        }
+                    }
+                    #[doc = concat!("Add a new `", stringify!($prop),
+                        "` or find an already existing one with the same value
+                        and return a [`", stringify!($name), "`] reference to it. ID CANNOT contain a `.`, or the function will panic.")]
+                    #[track_caller]
+                    pub fn [< add_placeholder_ $prop >] (
+                        &mut self,
+                        id: String
+                    ) -> $name {
+                        if id.contains('.') {
+                            panic!("ID of object cannot contain .")
+                        }
                         if !self.[< $prop _id_map >].contains_key(&id) {
                             let mut i = self.[< $prop _ids>].len();
 
@@ -174,8 +221,10 @@ macro_rules! define_ctx {
 
                             if i >= self.[< $prop _ids>].len() {
                                 self.[< $prop _ids >].push(Some(id.clone()));
+                                self.[< $prop _placeholder >].push(true);
                             } else {
                                 self.[< $prop _ids >][i] = Some(id.clone());
+                                self.[< $prop _placeholder >][i] = true;
                             }
 
                             self.[< $prop _id_map >]
@@ -183,9 +232,9 @@ macro_rules! define_ctx {
                             $(
                                 $(
                                     if i >= self.[< $prop2 s>].len() {
-                                        self.[< $prop2 s >].push(Some($prop2));
+                                        self.[< $prop2 s >].push(None);
                                     } else {
-                                        self.[< $prop2 s >][i] = Some($prop2);
+                                        self.[< $prop2 s >][i] = None;
                                     }
                                 );*
                             )?
