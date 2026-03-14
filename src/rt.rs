@@ -6,6 +6,7 @@ use std::{
     mem::ManuallyDrop,
     path::PathBuf,
     sync::{Arc, Mutex},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -21,8 +22,8 @@ use crate::{
     ctx::{AudioRef, EntryRef, ObjectRef, RoomRef},
     error,
     objs::{
-        AniEvent, DisplayedText, Event, EventArgs, EventResult, Font, LanguageData, ObjectStateKey,
-        Offset2, SealedRoomTransition, Sprite, Vec2, World,
+        AniEvent, Color, DisplayedText, Event, EventArgs, EventResult, Font, LanguageData,
+        ObjectStateKey, Offset2, Sprite, Vec2, World,
     },
     warn,
 };
@@ -233,9 +234,10 @@ pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
         },
         (move || async move {
             let mut timer = Duration::ZERO;
-            let mut last_t = Instant::now();
+            let mut last_start_t = Instant::now();
             let mut world = world;
             let gilrs = gilrs::Gilrs::new().expect("failed to initalize gilrs");
+            let total_ideal_frametime = Duration::from_secs_f64(1.0 / 30.0);
 
             loop {
                 let start_t = Instant::now();
@@ -300,8 +302,11 @@ pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
                     };
 
                     for action in actions {
-                        match (world.current_frame_presses.contains_key(action), input_state) {
-                            (true, InputState::Released | InputState::NewlyReleased) => {},
+                        match (
+                            world.current_frame_presses.contains_key(action),
+                            input_state,
+                        ) {
+                            (true, InputState::Released | InputState::NewlyReleased) => {}
                             _ => {
                                 world.current_frame_presses.insert(*action, input_state);
                             }
@@ -329,18 +334,40 @@ pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
 
                 frame(
                     &mut timer,
-                    Instant::now().duration_since(last_t),
+                    Instant::now().duration_since(last_start_t),
                     &mut world,
                 )
                 .await;
 
-                last_t = Instant::now();
+                last_start_t = start_t;
+                let mut last_t = Instant::now();
+                let mut dur = last_t.duration_since(start_t);
 
-                let end_t = Instant::now();
+                if dur < total_ideal_frametime {
+                    // println!("frametime of {dur:?}, sleeping for {:?}", total_ideal_frametime -
+                    // dur);
+                    thread::sleep((total_ideal_frametime - dur) - Duration::from_millis(1));
 
-                let dur = end_t.duration_since(start_t);
+                    last_t = Instant::now();
+                    dur = last_t.duration_since(start_t);
 
-                println!("{} FPS ({dur:?} per frame)", 1.0 / dur.as_secs_f64());
+                    let wakeup = Instant::now() + (total_ideal_frametime.saturating_sub(dur));
+
+                    while Instant::now() < wakeup {
+                        // don't yield to system scheduler and instead busy wait with a spin loop
+                        // hint; yielding to scheduler defeats the point of busy waiting here
+                        core::hint::spin_loop();
+                    }
+
+                    last_t = Instant::now();
+                    dur = last_t.duration_since(start_t);
+                }
+
+                if timer.as_millis() % 1000 < total_ideal_frametime.as_millis()
+                    || dur > Duration::from_millis(50)
+                {
+                    println!("{} FPS ({dur:?} per frame)", 1.0 / dur.as_secs_f64());
+                }
 
                 next_frame().await;
             }
@@ -515,12 +542,7 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
                     let to = *world.ctx.get_entry_room(entry);
                     world.post_event(
                         EventTarget::Object(trans, Some(world.current_room)),
-                        move || Event::RoomTransition {
-                            _sealed: SealedRoomTransition,
-                            from,
-                            to,
-                            entry,
-                        },
+                        move || Event::RoomTransition { from, to, entry },
                     );
                 }
                 for oref in &world.ctx.get_room(world.current_room).objects {
@@ -643,7 +665,6 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
     }
 
     if timer.as_millis() % (1000 / 20) <= (1000 / 50) {
-        println!("tick");
         send_event_all(
             || Event::Tick(delta),
             ObjectStateKey::Processing,
@@ -861,9 +882,12 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
         |world, res, _| match res {
             Some(EventResult::DisableDefault) => {}
             _ => {
-                if let Some((sprite, pos)) = world.ctx.get_room(world.current_room).background {
+                if let Some((sprite, pos, scale)) =
+                    world.ctx.get_room(world.current_room).background
+                {
                     draw_ctx.lock().unwrap().draw_sprite(
                         world.ctx.get_sprite(sprite).clone(),
+                        scale,
                         pos,
                         0.0,
                     );
@@ -918,6 +942,7 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
                         if let Some(sprite) = sprite {
                             draw_ctx.lock().unwrap().draw_sprite(
                                 world.ctx.get_sprite(sprite).clone(),
+                                obj.get_scale().unwrap_or(Offset2::ONE),
                                 pos,
                                 obj.get_rotation().unwrap_or_default(),
                             );
@@ -965,13 +990,12 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
                                 }
                             }
 
+                            frame_timer = Duration::ZERO;
                             world
                                 .ctx
                                 .get_mut_object(obj_r)
                                 .state
                                 .set(ObjectStateKey::AniFrame, new_frame);
-
-                            frame_timer = Duration::ZERO;
                         } else {
                             frame_timer += delta;
                         }
@@ -1005,10 +1029,12 @@ impl DrawContext {
     ) -> Self {
         Self(camera_pos, screen_size, fonts, sprites, lang)
     }
-    pub fn draw_sprite(&mut self, sprite: Sprite, pos: Vec2, rot: f32) {
-        self.draw_sprite_screen(sprite, (pos - self.0).into(), rot);
+    pub fn draw_sprite(&mut self, sprite: Sprite, scale: Offset2, pos: Vec2, rot: f32) {
+        self.draw_sprite_screen(sprite, scale, (pos - self.0).into(), rot);
     }
-    fn draw_sprite_screen(&self, sprite: Sprite, top_left: Vec2, rot: f32) {
+    fn draw_sprite_screen(&self, sprite: Sprite, scale: Offset2, top_left: Vec2, rot: f32) {
+        let sprite = sprite.scale(scale);
+
         let bottom_right = top_left + sprite.get_size();
 
         if bottom_right < Vec2::ZERO || top_left > self.1.into() {
@@ -1017,7 +1043,13 @@ impl DrawContext {
 
         let center = top_left - (sprite.get_size() / 2.0);
 
-        let mut data = ManuallyDrop::new(sprite.data.clone());
+        let mut data = ManuallyDrop::new(
+            sprite
+                .data
+                .iter()
+                .map(|v| v.multiply_alpha(Color::BLACK))
+                .collect::<Vec<_>>(),
+        );
 
         let len = data.len();
         let cap = data.capacity();
@@ -1054,7 +1086,7 @@ impl DrawContext {
                 _ => {
                     let (sprite_r, x_off) = font.sprites[font.char_index_map[&ch]];
                     let sprite = self.3[sprite_r.index].clone();
-                    self.draw_sprite_screen(sprite, text.loc + pos, text.char_rot);
+                    self.draw_sprite_screen(sprite, text.scale, text.loc + pos, text.char_rot);
 
                     pos.x += x_off as f32;
                 }

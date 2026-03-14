@@ -5,7 +5,7 @@ use libgm::wad::ParsingOptions;
 
 use crate::{
     ctx::Ctx,
-    objs::{self, Audio, Color, Offset2, Sprite, Vec2},
+    objs::{self, Audio, Color, Offset2, Sprite, Vec2, World},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -173,15 +173,15 @@ pub struct GamemakerDataProvider {
     opts: ParsingOptions,
     data: Option<libgm::wad::GMData>,
     source_game: &'static str,
-    sprites_to_load: HashMap<&'static str, HashSet<usize>>,
-    audio_to_load: HashSet<&'static str>,
+    sprites_to_load: HashMap<String, HashSet<usize>>,
+    audio_to_load: HashSet<String>,
 }
 
 impl GamemakerDataProvider {
     pub const fn new(
         source_game: &'static str,
-        sprites_to_load: HashMap<&'static str, HashSet<usize>>,
-        audio_to_load: HashSet<&'static str>,
+        sprites_to_load: HashMap<String, HashSet<usize>>,
+        audio_to_load: HashSet<String>,
     ) -> Self {
         Self {
             opts: ParsingOptions::new().allow_unknown_chunks(false),
@@ -224,6 +224,8 @@ impl GamemakerDataProvider {
 
         let mut data = ManuallyDrop::new(out_image.to_rgba8().to_vec());
 
+        // println!("{}x{}: {}", out_image.width(), out_image.height(), data.len());
+
         let len = data.len();
         let cap = data.capacity();
         let ptr = data.as_mut_ptr();
@@ -231,7 +233,7 @@ impl GamemakerDataProvider {
         Sprite {
             width: out_image.width() as u16,
             height: out_image.height() as u16,
-            data: unsafe { Vec::from_raw_parts(ptr as *mut objs::Color, len * 4, cap * 4) },
+            data: unsafe { Vec::from_raw_parts(ptr as *mut objs::Color, len / 4, cap / 4) },
         }
     }
 }
@@ -245,18 +247,19 @@ impl Provider for GamemakerDataProvider {
         }
     }
     fn present(&mut self) -> Result<(), Self::Error> {
-        let file = rfd::FileDialog::new()
-            .add_filter("Gamemaker Data File", &["win", "unx", "droid", "ios"])
-            .set_title(format!("Select {} Data File", self.source_game))
-            .set_can_create_directories(false)
-            .set_directory(
-                std::env::current_exe()
-                    .ok()
-                    .map(|v| v.parent().unwrap().to_owned())
-                    .or_else(|| std::env::current_dir().ok())
-                    .unwrap_or(PathBuf::from(".")),
-            )
-            .pick_file();
+        // let file = rfd::FileDialog::new()
+        //     .add_filter("Gamemaker Data File", &["win", "unx", "droid", "ios"])
+        //     .set_title(format!("Select {} Data File", self.source_game))
+        //     .set_can_create_directories(false)
+        //     .set_directory(
+        //         std::env::current_exe()
+        //             .ok()
+        //             .map(|v| v.parent().unwrap().to_owned())
+        //             .or_else(|| std::env::current_dir().ok())
+        //             .unwrap_or(PathBuf::from(".")),
+        //     )
+        //     .pick_file();
+        let file = Some("/home/vivian/deltarune/chapter1_windows/data.win");
 
         let file = file.expect("path to data file must be provided");
 
@@ -284,7 +287,8 @@ impl Provider for GamemakerDataProvider {
                     .unwrap();
                 let sprite = self.get_sprite_from_page_item(page);
 
-                ctx.add_sprite(format!("{namespace}:{name}"), sprite);
+                ctx.add_sprite(format!("{namespace}:{name}_{i}"), sprite);
+                println!("loaded {namespace}:{name}_{i}");
             }
         }
 

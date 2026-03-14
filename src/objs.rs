@@ -1,7 +1,8 @@
 //! Data model
 
 use std::{
-    collections::{self, HashMap, HashSet},
+    cmp::Ordering,
+    collections::{self, HashMap, HashSet, VecDeque},
     fmt::{self, Debug, Display},
     hash::Hash,
     num::NonZeroU8,
@@ -91,6 +92,23 @@ pub struct Offset2 {
 
 impl Offset2 {
     pub const ZERO: Self = Offset2 { x: 0.0, y: 0.0 };
+    pub const ONE: Self = Offset2 { x: 1.0, y: 1.0 };
+
+    pub fn dir(self, current: Option<Direction>) -> Option<Direction> {
+        use Direction::*;
+        use Ordering::*;
+        match (self.x.total_cmp(&0.0), self.y.total_cmp(&0.0)) {
+            (Equal, Equal)
+            | (Greater, Greater)
+            | (Less, Less)
+            | (Greater, Less)
+            | (Less, Greater) => current,
+            (Greater, Equal) => Some(Right),
+            (Less, Equal) => Some(Left),
+            (Equal, Greater) => Some(Down),
+            (Equal, Less) => Some(Up),
+        }
+    }
 }
 
 impl From<Offset2> for Vec2 {
@@ -376,6 +394,7 @@ pub enum StateData {
     Option(Option<Box<StateData>>),
     LanguageRef(LanguageRef),
     Key(Key),
+    Direction(Direction),
 }
 
 struct StateDataSeed<'a, 'b> {
@@ -423,6 +442,7 @@ impl Serialize for StateDataSeed<'_, '_> {
                 data: Some(v),
             }))?,
             Key(v) => tuple.serialize_field(v)?,
+            Direction(v) => tuple.serialize_field(v)?,
             LanguageRef(v) => tuple.serialize_field(self.ctx.get_lang_id(*v))?,
         };
 
@@ -556,6 +576,18 @@ impl<'de> DeserializeSeed<'de> for StateDataSeed<'_, '_> {
                             serde::de::Error::custom(format!("unknown room ID: {}", id))
                         })?;
                         Ok(StateData::LanguageRef(room_ref))
+                    }
+                    "Key" => {
+                        let v: Key = seq
+                            .next_element()?
+                            .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                        Ok(StateData::Key(v))
+                    }
+                    "Direction" => {
+                        let v: Direction = seq
+                            .next_element()?
+                            .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                        Ok(StateData::Direction(v))
                     }
                     _ => Err(serde::de::Error::unknown_variant(&var, StateData::VARIANTS)),
                 }
@@ -766,6 +798,7 @@ impl_statedata! {
     Duration(Duration),
     LanguageRef(LanguageRef),
     Key(Key),
+    Direction(Direction),
 }
 
 impl<T> From<&Vec<T>> for StateData
@@ -872,6 +905,9 @@ pub enum ObjectStateKey {
     PartyMembers,
     /// The [`ObjectRef`] of the party member that is the player.
     PlayerPartyMember,
+    CurrentPlayerDir,
+    /// 0 for player, player controller ignores, 1+ for subsequent
+    PartyMemberI,
     Other(String),
 }
 
@@ -942,6 +978,8 @@ impl_obj_state_key!(
     "_zc.lvd" => IsLight,
     "_zc.pml" => PartyMembers,
     "_zc.ppm" => PlayerPartyMember,
+    "_zc.cpd" => CurrentPlayerDir,
+    "_zc.pmi" => PartyMemberI,
 );
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -1071,6 +1109,9 @@ pub struct World {
     pub game_id: String,
     /// The current focus in the UI.
     pub ui_focus: Option<ObjectRef>,
+    /// History of positions of the player up to 500 frames ago (~17 seconds at
+    /// 30 FPS)
+    pub primary_player_history: VecDeque<Vec2>,
     #[debug(skip)]
     pub(crate) text: HashSet<TextRef>,
     #[debug(skip)]
@@ -1114,6 +1155,7 @@ impl World {
             room_transition,
             lang,
             game_id,
+            primary_player_history: VecDeque::new(),
             ui_focus: None,
             event_queue: vec![],
             internal_event_queue: vec![],
@@ -1355,8 +1397,8 @@ impl World {
 
 #[derive(Clone, Debug, Default)]
 pub struct Room {
-    /// The sprite and offset of the background.
-    pub background: Option<(SpriteRef, Vec2)>,
+    /// The sprite, location, and scale of the background.
+    pub background: Option<(SpriteRef, Vec2, Offset2)>,
     pub objects: Vec<ObjectRef>,
     pub callbacks: Option<Callbacks>,
     pub state: ObjectState,
@@ -1415,9 +1457,6 @@ macro_rules! event_enums {
     };
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
-pub(crate) struct SealedRoomTransition;
-
 event_enums!(
     /// Does NOT continue if DisableDefault.
     Event::AniContinueEvent => AniContinueEvent ;,
@@ -1429,7 +1468,7 @@ event_enums!(
     Event::Collide{..} => Collide {
         other: ObjectRef,
     },
-    /// Called the full 60 times a second, after Tick when Tick is run. Duration is delta time,
+    /// Called the full 30 times a second, after Tick when Tick is run. Duration is delta time,
     /// DisableDefault disables rendering the current sprite/animation like usual.
     Event::Render(..) => Render(
         v0 Duration,
@@ -1454,9 +1493,6 @@ event_enums!(
     /// Produced by the engine for the room_transition object, if one exists. Emitted
     /// directly before unloading the old room and loading the new room (i.e. on the same frame).
     Event::RoomTransition { .. } => RoomTransition {
-        /// To prevent manually constructing outside of the engine
-        #[allow(private_interfaces)]
-        _sealed: SealedRoomTransition,
         from: RoomRef,
         to: RoomRef,
         entry: EntryRef,
@@ -1725,6 +1761,30 @@ impl Sprite {
             data: region,
         })
     }
+    pub fn scale(&self, scale: Offset2) -> Sprite {
+        if scale == (Offset2 { x: 1.0, y: 1.0 }) {
+            return self.clone();
+        }
+
+        let out_size = self.get_size() * scale;
+
+        let mut out = Sprite {
+            width: out_size.x as u16,
+            height: out_size.y as u16,
+            data: vec![Color::BLACK; out_size.x as usize * out_size.y as usize],
+        };
+
+        for x in 0..(out_size.x as u16) {
+            for y in 0..(out_size.y as u16) {
+                out[(x, y)] = self[(
+                    (x as f32 / scale.x).trunc() as u16,
+                    (y as f32 / scale.y).trunc() as u16,
+                )];
+            }
+        }
+
+        out
+    }
 }
 
 impl Index<(u16, u16)> for Sprite {
@@ -1779,6 +1839,7 @@ pub struct DisplayedText {
     /// mans italic.
     pub char_rot: f32,
     pub font: FontRef,
+    pub scale: Offset2,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1786,12 +1847,24 @@ pub struct LanguageData {
     pub strings: HashMap<LocalTextRef, String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Direction {
     Up,
     Down,
     Left,
     Right,
+}
+
+impl Direction {
+    pub const ALL: &[Direction] = &[Self::Up, Self::Down, Self::Left, Self::Right];
+    pub fn to_char(self) -> char {
+        match self {
+            Self::Up => 'u',
+            Self::Down => 'd',
+            Self::Left => 'l',
+            Self::Right => 'r',
+        }
+    }
 }
 
 impl From<Direction> for Vec2 {

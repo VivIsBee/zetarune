@@ -164,7 +164,7 @@ macro_rules! define_ctx {
                         if id.contains('.') {
                             panic!("ID of object cannot contain .")
                         }
-                        if !self.[< $prop _id_map >].contains_key(&id) || self.[< $prop _placeholder >][self.[< $prop _id_map >][&id]]  {
+                        if !self.[< $prop _id_map >].contains_key(&id)  {
                             let mut i = self.[< $prop _ids>].len();
 
                             for (c_i, id) in self.[< $prop _ids >].iter().enumerate() {
@@ -192,6 +192,14 @@ macro_rules! define_ctx {
                                         self.[< $prop2 s >][i] = Some($prop2);
                                     }
                                 );*
+                            )?
+                        } else if self.[< $prop _placeholder >][self.[< $prop _id_map >][&id]] {
+                            let i = self.[< $prop _id_map >][&id];
+                            self.[< $prop _placeholder >][i] = false;
+                            $(
+                                $(
+                                    self.[< $prop2 s >][i] = Some($prop2);
+                                )*
                             )?
                         }
                         $name {
@@ -255,7 +263,7 @@ macro_rules! define_ctx {
                             pub fn [< get_ $prop2 >] (&self, val: $name) ->
                                 ctx_get_borrowed_or_owned!(borrowed $unwrapped_t2 $(: $owned_t2)? $(: $default)?) {
                                 if self.[< $prop2 s >] [val.index].is_none() {
-                                    panic!("tried to use a dead reference");
+                                    panic!("tried to use a dead or placeholder reference");
                                 }
                                 self.[< $prop2 s >] [val.index].as_ref().unwrap()
                             }
@@ -269,7 +277,7 @@ macro_rules! define_ctx {
                             pub fn [< get_mut_ $prop2 >] (&mut self, val: $name) ->
                                 ctx_get_borrowed_or_owned!(borrowed mut $unwrapped_t2 $(: $owned_t2)? $(: $default)?) {
                                 if self.[< $prop2 s >] [val.index].is_none() {
-                                    panic!("tried to use a dead reference");
+                                    panic!("tried to use a dead or placeholder reference");
                                 }
                                 self.[< $prop2 s >] [val.index].as_mut().unwrap()
                             }

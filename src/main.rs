@@ -1,51 +1,36 @@
 //! Test game for zetarune
 
-use std::{collections::HashMap, num::NonZeroU8};
+use std::collections::{HashMap, HashSet};
 
 use zetarune::{
-    components::party::PartyMemberBuilder,
+    components::party::{self, WorldCharacterBuilder},
     ctx::{Ctx, ObjectRef, RoomRef},
-    objs::{
-        AniEvent, AniSheet, Animation, Collider, ColliderType, Color, LanguageData, ObjectState,
-        Offset2, Room, Sprite, World,
-    },
+    objs::{Collider, ColliderType, LanguageData, ObjectState, Offset2, Room, World},
+    resources::{self, Provider},
 };
 
 fn main() {
     let mut ctx = Ctx::new();
-    let sprite = ctx.add_sprite(
-        "sprite01".to_string(),
-        Sprite {
-            width: 32,
-            height: 32,
-            data: vec![
-                Color {
-                    r: 255,
-                    g: 0,
-                    b: 0,
-                    a: 255
-                };
-                32 * 32
-            ],
-        },
-    );
-    let ani = ctx.add_ani(
-        "ani01".to_string(),
-        Animation {
-            timeline: vec![AniEvent::Sprite {
-                sprite,
-                frame_count: NonZeroU8::new(1).unwrap(),
-            }],
-            fps: 0,
-            loops: true,
-        },
-    );
-    let sheet = ctx.add_sheet(
-        "sheet01".to_string(),
-        AniSheet {
-            anis: [("idle".to_string(), ani)].into_iter().collect(),
-        },
-    );
+    // let sprite = ctx.add_placeholder_sprite(
+    //     "deltarune_ch1:spr_krisr_0".to_string(),
+    // );
+    // let ani = ctx.add_ani(
+    //     "ani01".to_string(),
+    //     Animation {
+    //         timeline: vec![AniEvent::Sprite {
+    //             sprite,
+    //             frame_count: NonZeroU8::new(1).unwrap(),
+    //         }],
+    //         fps: 0,
+    //         loops: true,
+    //     },
+    // );
+    // let sheet = ctx.add_sheet(
+    //     "sheet01".to_string(),
+    //     AniSheet {
+    //         anis: [("idle".to_string(), ani)].into_iter().collect(),
+    //     },
+    // );
 
     let lang = ctx.add_lang(
         "n/a".to_string(),
@@ -56,6 +41,14 @@ fn main() {
 
     let placeholder_room = RoomRef::default(&mut ctx);
     let placeholder_camera = ObjectRef::default(&mut ctx);
+
+    let (sheet, sprites_to_load) = party::WorldCharacter::set_sprite_placeholders_deltarune(
+        "deltarune_ch1",
+        "kris",
+        &mut ctx,
+        true,
+        true,
+    );
 
     let mut world = World::new(
         ctx,
@@ -71,7 +64,7 @@ fn main() {
         "example.zetarune.components.party".to_string(),
     );
 
-    let obj1 = PartyMemberBuilder::new(sheet)
+    let obj1 = WorldCharacterBuilder::new(sheet, true)
         .add_collider(vec![Collider {
             t: ColliderType::Rect {
                 size: Offset2 { x: 50.0, y: 50.0 },
@@ -92,8 +85,17 @@ fn main() {
             entrypoints: HashMap::new(),
         },
     );
-    
+
     world.current_room = room;
+
+    let mut provider = resources::GamemakerDataProvider::new(
+        "DELTARUNE: Chapter 1",
+        sprites_to_load,
+        HashSet::new(),
+    );
+
+    provider.present().unwrap();
+    provider.load(&mut world.ctx, "deltarune_ch1").unwrap();
 
     zetarune::rt::main("Zetarune Party Test", false, world);
 }
