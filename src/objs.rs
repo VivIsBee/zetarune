@@ -878,8 +878,6 @@ pub enum ObjectStateKey {
     #[doc(hidden)]
     AniFrameTimer,
     Playing,
-    /// Not touched by the engine, used by the component library
-    UIFocus,
     Other(String),
 }
 
@@ -946,7 +944,6 @@ impl_obj_state_key!(
     "_zr.pla" => Playing,
     "_zr.aft" => AniFrameTimer,
     "_zr.zlr" => ZLayer,
-    "_zr.uif" => UIFocus,
 );
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -1076,16 +1073,20 @@ pub struct World {
     /// The game ID. Only requirement is it must be a valid path element on all
     /// platforms this game is exported to.
     pub game_id: String,
+    /// The current focus in the UI.
+    pub ui_focus: Option<ObjectRef>,
     #[debug(skip)]
     pub(crate) text: HashSet<TextRef>,
     #[debug(skip)]
-    pub(crate) event_queue: Vec<(EventTarget, Box<dyn FnMut() -> Event<'static>>)>,
+    pub(crate) event_queue: Vec<(EventTarget, Box<dyn FnMut() -> Event>)>,
     #[debug(skip)]
     pub(crate) internal_event_queue: Vec<InternalEvent>,
     #[debug(skip)]
     pub(crate) current_frame_presses: HashMap<ActionRef, InputState>,
     #[debug(skip)]
     pub(crate) audio_handle: rodio::MixerDeviceSink,
+    #[debug(skip)]
+    pub(crate) joystick_loc: HashMap<gilrs::Axis, f32>,
 }
 
 impl World {
@@ -1117,12 +1118,17 @@ impl World {
             room_transition,
             lang,
             game_id,
+            ui_focus: None,
             event_queue: vec![],
             internal_event_queue: vec![],
             current_frame_presses: HashMap::new(),
             audio_handle: handle,
             text: HashSet::new(),
+            joystick_loc: HashMap::new(),
         }
+    }
+    pub fn joystick_loc(&self, axis: gilrs::Axis) -> f32 {
+        self.joystick_loc.get(&axis).copied().unwrap_or(0.0)
     }
     pub fn save(&mut self, save_num: u16) {
         self.internal_event_queue
@@ -1148,6 +1154,7 @@ impl World {
             ("camera_obj", (&self.camera_obj).into()),
             ("room_transition", (&self.room_transition).into()),
             ("lang", (&self.lang).into()),
+            ("ui_focus", (&self.ui_focus).into()),
         ] {
             out.set::<StateData>(ObjectStateKey::Other(root_internal.clone() + name), value);
         }
@@ -1193,6 +1200,7 @@ impl World {
         self.camera_obj = from_state.get("camera_obj".into()).unwrap();
         self.room_transition = from_state.get("room_transition".into()).unwrap();
         self.lang = from_state.get("lang".into()).unwrap();
+        self.ui_focus = from_state.get("ui_focus".into()).unwrap();
 
         from_state.unflatten("world", &mut self.state);
 
@@ -1263,7 +1271,7 @@ impl World {
     pub fn post_event(
         &mut self,
         target: EventTarget,
-        event_producer: impl FnMut() -> Event<'static> + 'static,
+        event_producer: impl FnMut() -> Event + 'static,
     ) {
         self.event_queue
             .push((target, Box::new(event_producer) as Box<_>))
@@ -1341,12 +1349,12 @@ macro_rules! event_enums {
             $($(#[$meta])* $variant),*
         }
         #[derive(derive_more::Debug)]
-        pub enum Event<'a> {
+        pub enum Event {
             $($(#[$meta])* $variant $(( $($(#[$meta3])* $t2),* ))? $({ $( $(#[$meta2])* $name: $t ),* })?),*
         }
 
-        impl From<&Event<'_>> for EventName {
-            fn from(value: &Event<'_>) -> Self {
+        impl From<&Event> for EventName {
+            fn from(value: &Event) -> Self {
                 match value {
                     $(
                         $matcher => EventName::$variant
@@ -1384,14 +1392,6 @@ event_enums!(
     /// as a callback for before the game closes or is otherwise unloaded by the
     /// engine.
     Event::Unload => Unload,
-    Event::SaveData {..} => SaveData {
-        /// A new object state NOT tied to the current object to write new data that
-        /// has to be saved to or otherwise change the saved data.
-        new_obj_state: &'a mut ObjectState
-    },
-    /// After all data is loaded into the ObjectState, called before Load to adjust
-    /// the data or do any game-specific setup needed after loading.
-    Event::LoadData => LoadData,
     Event::KeyPress { .. } => KeyPress {
         key: Key,
     },
@@ -1400,16 +1400,6 @@ event_enums!(
     },
     Event::KeyHold { .. } => KeyHold {
         key: Key,
-    },
-    Event::JoystickMove { .. } => JoystickMove {
-        axis: gilrs::Axis,
-        /// In the range 0..=1
-        value: f32,
-    },
-    Event::MousePress { .. } => MousePress {
-        button: macroquad::input::MouseButton,
-        /// World position of the mouse press
-        pos: Vec2,
     },
     /// Produced by the engine for the room_transition object, if one exists. Emitted
     /// directly before unloading the old room and loading the new room (i.e. on the same frame).

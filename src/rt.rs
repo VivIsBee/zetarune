@@ -125,6 +125,24 @@ pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
                     }
                 }
 
+                world.joystick_loc.clear();
+
+                for (_, gamepad) in gilrs.gamepads() {
+                    use gilrs::Axis::*;
+                    for axis in [
+                        LeftStickX,
+                        LeftStickY,
+                        LeftZ,
+                        RightStickX,
+                        RightStickY,
+                        RightZ,
+                        DPadX,
+                        DPadY,
+                    ] {
+                        world.joystick_loc.insert(axis, gamepad.value(axis));
+                    }
+                }
+
                 frame(
                     &mut timer,
                     Instant::now().duration_since(last_t),
@@ -167,7 +185,7 @@ pub(crate) enum InternalEvent {
     Load(u16),
 }
 
-fn send_event_all<'a, F: FnMut() -> Event<'a> + 'a>(
+fn send_event_all<'a, F: FnMut() -> Event + 'a>(
     mut event_producer: F,
     world: &mut World,
     objs: &[(ObjectRef, Option<RoomRef>)],
