@@ -12,7 +12,7 @@ use std::{
 use macroquad::{
     color::WHITE,
     conf::Conf,
-    input,
+    input::{self, KeyCode},
     texture::{DrawTextureParams, Image, Texture2D, draw_texture_ex},
     window::{next_frame, screen_height, screen_width},
 };
@@ -27,9 +27,188 @@ use crate::{
     warn,
 };
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+macro_rules! impl_from_u16 {
+    ($vis:vis enum $enum:ty { $( $(#[$meta:meta])* $variant:ident = $val:literal),+ $(,)? }) => {
+        impl FromU16 for $enum {
+            fn from_u16(value: u16) -> Option<Self> {
+                match value {
+                    $($val => Some(<$enum>::$variant),)+
+                    _ => None,
+                }
+            }
+        }
+    };
+}
+
+trait FromU16: Sized {
+    fn from_u16(value: u16) -> Option<Self>;
+}
+
+// Usage:
+impl_from_u16! {
+    pub enum KeyCode {
+        Space = 0x0020,
+        Apostrophe = 0x0027,
+        Comma = 0x002c,
+        Minus = 0x002d,
+        Period = 0x002e,
+        Slash = 0x002f,
+        Key0 = 0x0030,
+        Key1 = 0x0031,
+        Key2 = 0x0032,
+        Key3 = 0x0033,
+        Key4 = 0x0034,
+        Key5 = 0x0035,
+        Key6 = 0x0036,
+        Key7 = 0x0037,
+        Key8 = 0x0038,
+        Key9 = 0x0039,
+        Semicolon = 0x003b,
+        Equal = 0x003d,
+        A = 0x0041,
+        B = 0x0042,
+        C = 0x0043,
+        D = 0x0044,
+        E = 0x0045,
+        F = 0x0046,
+        G = 0x0047,
+        H = 0x0048,
+        I = 0x0049,
+        J = 0x004a,
+        K = 0x004b,
+        L = 0x004c,
+        M = 0x004d,
+        N = 0x004e,
+        O = 0x004f,
+        P = 0x0050,
+        Q = 0x0051,
+        R = 0x0052,
+        S = 0x0053,
+        T = 0x0054,
+        U = 0x0055,
+        V = 0x0056,
+        W = 0x0057,
+        X = 0x0058,
+        Y = 0x0059,
+        Z = 0x005a,
+        LeftBracket = 0x005b,
+        Backslash = 0x005c,
+        RightBracket = 0x005d,
+        GraveAccent = 0x0060,
+        World1 = 0x0100,
+        World2 = 0x0101,
+        Escape = 0xff1b,
+        Enter = 0xff0d,
+        Tab = 0xff09,
+        Backspace = 0xff08,
+        Insert = 0xff63,
+        Delete = 0xffff,
+        Right = 0xff53,
+        Left = 0xff51,
+        Down = 0xff54,
+        Up = 0xff52,
+        PageUp = 0xff55,
+        PageDown = 0xff56,
+        Home = 0xff50,
+        End = 0xff57,
+        CapsLock = 0xffe5,
+        ScrollLock = 0xff14,
+        NumLock = 0xff7f,
+        PrintScreen = 0xfd1d,
+        Pause = 0xff13,
+        F1 = 0xffbe,
+        F2 = 0xffbf,
+        F3 = 0xffc0,
+        F4 = 0xffc1,
+        F5 = 0xffc2,
+        F6 = 0xffc3,
+        F7 = 0xffc4,
+        F8 = 0xffc5,
+        F9 = 0xffc6,
+        F10 = 0xffc7,
+        F11 = 0xffc8,
+        F12 = 0xffc9,
+        F13 = 0xffca,
+        F14 = 0xffcb,
+        F15 = 0xffcc,
+        F16 = 0xffcd,
+        F17 = 0xffce,
+        F18 = 0xffcf,
+        F19 = 0xffd0,
+        F20 = 0xffd1,
+        F21 = 0xffd2,
+        F22 = 0xffd3,
+        F23 = 0xffd4,
+        F24 = 0xffd5,
+        F25 = 0xffd6,
+        Kp0 = 0xffb0,
+        Kp1 = 0xffb1,
+        Kp2 = 0xffb2,
+        Kp3 = 0xffb3,
+        Kp4 = 0xffb4,
+        Kp5 = 0xffb5,
+        Kp6 = 0xffb6,
+        Kp7 = 0xffb7,
+        Kp8 = 0xffb8,
+        Kp9 = 0xffb9,
+        KpDecimal = 0xffae,
+        KpDivide = 0xffaf,
+        KpMultiply = 0xffaa,
+        KpSubtract = 0xffad,
+        KpAdd = 0xffab,
+        KpEnter = 0xff8d,
+        KpEqual = 0xffbd,
+        LeftShift = 0xffe1,
+        LeftControl = 0xffe3,
+        LeftAlt = 0xffe9,
+        LeftSuper = 0xffeb,
+        RightShift = 0xffe2,
+        RightControl = 0xffe4,
+        RightAlt = 0xffea,
+        RightSuper = 0xffec,
+        Menu = 0xff67,
+        // Android back button
+        Back = 0xff04,
+        Unknown = 0x01ff,
+    }
+}
+
+fn key_code_serialize<S>(code: &KeyCode, s: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    s.serialize_u16((*code) as u16)
+}
+
+fn key_code_deserialize<'de, D>(d: D) -> Result<KeyCode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct KeyCodeVisitor;
+    impl<'de> serde::de::Visitor<'de> for KeyCodeVisitor {
+        type Value = KeyCode;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a macroquad keycode")
+        }
+        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(KeyCode::from_u16(v as u16).unwrap_or(KeyCode::Unknown))
+        }
+    }
+    d.deserialize_u16(KeyCodeVisitor)
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Key {
-    Keyboard(macroquad::input::KeyCode),
+    Keyboard(
+        #[serde(
+            serialize_with = "key_code_serialize",
+            deserialize_with = "key_code_deserialize"
+        )]
+        macroquad::input::KeyCode,
+    ),
     Gamepad(gilrs::Button),
 }
 
@@ -121,11 +300,16 @@ pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
                     };
 
                     for action in actions {
-                        world.current_frame_presses.insert(*action, input_state);
+                        match (world.current_frame_presses.contains_key(action), input_state) {
+                            (true, InputState::Released | InputState::NewlyReleased) => {},
+                            _ => {
+                                world.current_frame_presses.insert(*action, input_state);
+                            }
+                        }
                     }
                 }
 
-                world.joystick_loc.clear();
+                world.axis_loc.clear();
 
                 for (_, gamepad) in gilrs.gamepads() {
                     use gilrs::Axis::*;
@@ -139,7 +323,7 @@ pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
                         DPadX,
                         DPadY,
                     ] {
-                        world.joystick_loc.insert(axis, gamepad.value(axis));
+                        world.axis_loc.insert(axis, gamepad.value(axis));
                     }
                 }
 
@@ -187,55 +371,66 @@ pub(crate) enum InternalEvent {
 
 fn send_event_all<'a, F: FnMut() -> Event + 'a>(
     mut event_producer: F,
+    key: ObjectStateKey,
     world: &mut World,
     objs: &[(ObjectRef, Option<RoomRef>)],
     world_callback: impl FnOnce(&mut World, Option<EventResult>),
     room_callback: impl FnOnce(&mut World, Option<EventResult>, RoomRef),
     mut object_callback: impl FnMut(&mut World, Option<EventResult>, ObjectRef),
 ) {
-    if let Some(callbacks) = world.callbacks.clone() {
-        let res = callbacks.trigger(
-            event_producer(),
-            EventArgs {
-                room: None,
-                obj: None,
-                world: world,
-            },
-        );
-        world_callback(world, res);
-    } else {
-        world_callback(world, None);
-    }
-
-    if let Some(callbacks) = world.ctx.get_room(world.current_room).callbacks.clone() {
-        let res = callbacks.trigger(
-            event_producer(),
-            EventArgs {
-                room: Some(world.current_room),
-                obj: None,
-                world: world,
-            },
-        );
-        room_callback(world, res, world.current_room);
-    } else {
-        room_callback(world, None, world.current_room);
-    }
-
-    for (obj_r, room) in objs {
-        let obj = world.ctx.get_object(*obj_r);
-
-        if let Some(callbacks) = obj.callbacks.clone() {
+    if world.state.get(key.clone()).unwrap_or(true) {
+        if let Some(callbacks) = world.callbacks.clone() {
             let res = callbacks.trigger(
                 event_producer(),
                 EventArgs {
-                    room: *room,
-                    obj: Some(*obj_r),
+                    room: None,
+                    obj: None,
                     world: world,
                 },
             );
-            object_callback(world, res, *obj_r);
+            world_callback(world, res);
         } else {
-            object_callback(world, None, *obj_r);
+            world_callback(world, None);
+        }
+    }
+
+    let room = world.ctx.get_room(world.current_room);
+    if room.state.get(key.clone()).unwrap_or(true) {
+        if let Some(callbacks) = room.callbacks.clone() {
+            let res = callbacks.trigger(
+                event_producer(),
+                EventArgs {
+                    room: Some(world.current_room),
+                    obj: None,
+                    world: world,
+                },
+            );
+            room_callback(world, res, world.current_room);
+        } else {
+            room_callback(world, None, world.current_room);
+        }
+    }
+
+    for (obj_r, room) in objs {
+        if room.is_some() && room.unwrap() != world.current_room {
+            continue;
+        }
+        let obj = world.ctx.get_object(*obj_r);
+
+        if obj.state.get(key.clone()).unwrap_or(true) {
+            if let Some(callbacks) = obj.callbacks.clone() {
+                let res = callbacks.trigger(
+                    event_producer(),
+                    EventArgs {
+                        room: *room,
+                        obj: Some(*obj_r),
+                        world: world,
+                    },
+                );
+                object_callback(world, res, *obj_r);
+            } else {
+                object_callback(world, None, *obj_r);
+            }
         }
     }
 }
@@ -447,9 +642,11 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
         }
     }
 
-    if timer.as_millis() % (1000 / 20) == 0 {
+    if timer.as_millis() % (1000 / 20) <= (1000 / 50) {
+        println!("tick");
         send_event_all(
             || Event::Tick(delta),
+            ObjectStateKey::Processing,
             world,
             &objs,
             |_, _| {},
@@ -561,7 +758,6 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
                             .state
                             .set(ObjectStateKey::Pos, pos2 + offset);
                     } else if (!obj_static_body) && other_static_body {
-                        println!("{pos1:?}, {offset:?}, {:?}", pos1 + offset);
                         world
                             .ctx
                             .get_mut_object(obj_r)
@@ -597,7 +793,15 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
                 }
             }
             EventTarget::All => {
-                send_event_all(event, world, &objs, |_, _| {}, |_, _, _| {}, |_, _, _| {});
+                send_event_all(
+                    event,
+                    ObjectStateKey::Processing,
+                    world,
+                    &objs,
+                    |_, _| {},
+                    |_, _, _| {},
+                    |_, _, _| {},
+                );
             }
         }
     }
@@ -607,7 +811,7 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
             .ctx
             .get_object(world.camera_obj)
             .get_position()
-            .unwrap()
+            .unwrap_or(Vec2::ZERO)
             - (screen_size / 2.0),
         screen_size,
         world
@@ -650,6 +854,7 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
 
     send_event_all(
         || Event::Render(delta, draw_ctx.clone()),
+        ObjectStateKey::Visible,
         world,
         &objs,
         |_, _| {},
@@ -673,8 +878,6 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
                     && let Some(pos) = obj.get_position()
                     && obj.get_visible().unwrap_or(true)
                 {
-                    println!("{obj_r:?}: {pos:?}");
-
                     let sheet = world.ctx.get_sheet(ani_sheet_ref);
                     if let Some(ani) = obj.get_ani()
                         && let Some(frame) = obj.get_frame()

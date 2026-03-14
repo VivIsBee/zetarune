@@ -10,6 +10,7 @@ use std::{
     time::Duration,
 };
 
+use gilrs::Axis;
 use rodio::{Source, SpatialPlayer};
 use serde::{
     Deserialize, Serialize,
@@ -157,10 +158,10 @@ impl_vec_ops1! (
 
 impl_vec_ops2! (
     ((Offset2) (Div [div /]) (f32) assign -> Offset2),
-    ((Offset2) (Mul [mul /]) (f32) assign -> Offset2),
+    ((Offset2) (Mul [mul *]) (f32) assign -> Offset2),
 
     ((Vec2) (Div [div /]) (f32) assign -> Vec2),
-    ((Vec2) (Mul [mul /]) (f32) assign -> Vec2),
+    ((Vec2) (Mul [mul *]) (f32) assign -> Vec2),
 );
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -355,7 +356,7 @@ impl Collider {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 #[repr(u8)]
 pub enum StateData {
     Vec2(Vec2),
@@ -374,6 +375,7 @@ pub enum StateData {
     List(Vec<StateData>),
     Option(Option<Box<StateData>>),
     LanguageRef(LanguageRef),
+    Key(Key),
 }
 
 struct StateDataSeed<'a, 'b> {
@@ -420,6 +422,7 @@ impl Serialize for StateDataSeed<'_, '_> {
                 ctx: self.ctx,
                 data: Some(v),
             }))?,
+            Key(v) => tuple.serialize_field(v)?,
             LanguageRef(v) => tuple.serialize_field(self.ctx.get_lang_id(*v))?,
         };
 
@@ -700,53 +703,6 @@ impl<'de, 'a> DeserializeSeed<'de> for StateDataMapSeed<'a> {
     }
 }
 
-impl PartialEq for StateData {
-    fn eq(&self, other: &Self) -> bool {
-        use StateData::*;
-        match (self, other) {
-            (Vec2(v1), Vec2(v2)) => v1 == v2,
-            (Offset2(v1), Offset2(v2)) => v1 == v2,
-            (ObjectRef(v1), ObjectRef(v2)) => v1 == v2,
-            (RoomRef(v1), RoomRef(v2)) => v1 == v2,
-            (Color(v1), Color(v2)) => v1 == v2,
-            (Int(v1), Int(v2)) => v1 == v2,
-            (Uint(v1), Uint(v2)) => v1 == v2,
-            (Bool(v1), Bool(v2)) => v1 == v2,
-            (String(v1), String(v2)) => v1 == v2,
-            (Duration(v1), Duration(v2)) => v1 == v2,
-            (List(v1), List(v2)) => v1 == v2,
-            (Option(v1), Option(v2)) => v1 == v2,
-            (LanguageRef(v1), LanguageRef(v2)) => v1 == v2,
-            (Float(v1), Float(v2)) => v1.to_bits() == v2.to_bits(),
-            _ => false,
-        }
-    }
-}
-
-impl Eq for StateData {}
-
-impl Hash for StateData {
-    fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) {
-        use StateData::*;
-        match self {
-            Vec2(v) => v.hash(hasher),
-            Offset2(v) => v.hash(hasher),
-            ObjectRef(v) => v.hash(hasher),
-            RoomRef(v) => v.hash(hasher),
-            Color(v) => v.hash(hasher),
-            Int(v) => v.hash(hasher),
-            Uint(v) => v.hash(hasher),
-            Bool(v) => v.hash(hasher),
-            String(v) => v.hash(hasher),
-            Duration(v) => v.hash(hasher),
-            List(v) => v.hash(hasher),
-            Option(v) => v.hash(hasher),
-            LanguageRef(v) => v.hash(hasher),
-            Float(v) => v.to_bits().hash(hasher),
-        }
-    }
-}
-
 macro_rules! impl_statedata {
     ($($name:ident($t:ty)),* $(,)?) => {
         $(
@@ -763,6 +719,15 @@ macro_rules! impl_statedata {
             impl TryFrom<StateData> for $t {
                 type Error = ();
                 fn try_from(v: StateData) -> Result<$t, ()> {
+                    match v {
+                        StateData::$name(v) => Ok(v),
+                        _ => Err(()),
+                    }
+                }
+            }
+            impl<'a> TryFrom<&'a mut StateData> for &'a mut $t {
+                type Error = ();
+                fn try_from(v: &'a mut StateData) -> Result<&'a mut $t, ()> {
                     match v {
                         StateData::$name(v) => Ok(v),
                         _ => Err(()),
@@ -800,6 +765,7 @@ impl_statedata! {
     String(String),
     Duration(Duration),
     LanguageRef(LanguageRef),
+    Key(Key),
 }
 
 impl<T> From<&Vec<T>> for StateData
@@ -829,6 +795,15 @@ where
                 .into_iter()
                 .map(|v| <StateData as TryInto<T>>::try_into(v))
                 .collect::<Result<Vec<_>, ()>>()?),
+            _ => Err(()),
+        }
+    }
+}
+impl<'a> TryFrom<&'a mut StateData> for &'a mut Vec<StateData> {
+    type Error = ();
+    fn try_from(v: &'a mut StateData) -> Result<&'a mut Vec<StateData>, ()> {
+        match v {
+            StateData::List(v) => Ok(v),
             _ => Err(()),
         }
     }
@@ -864,6 +839,15 @@ where
         }
     }
 }
+impl<'a> TryFrom<&'a mut StateData> for &'a mut Option<Box<StateData>> {
+    type Error = ();
+    fn try_from(v: &'a mut StateData) -> Result<&'a mut Option<Box<StateData>>, ()> {
+        match v {
+            StateData::Option(v) => Ok(v),
+            _ => Err(()),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ObjectStateKey {
@@ -878,6 +862,16 @@ pub enum ObjectStateKey {
     #[doc(hidden)]
     AniFrameTimer,
     Playing,
+    /// Global state machine, not touched by engine but used in component
+    /// library
+    State,
+    /// True for light world, false for dark world.
+    IsLight,
+    /// A list of [`ObjectRef`]s, all in the world.player list, that are a part
+    /// of the party.
+    PartyMembers,
+    /// The [`ObjectRef`] of the party member that is the player.
+    PlayerPartyMember,
     Other(String),
 }
 
@@ -944,19 +938,14 @@ impl_obj_state_key!(
     "_zr.pla" => Playing,
     "_zr.aft" => AniFrameTimer,
     "_zr.zlr" => ZLayer,
+    "_zc.stm" => State,
+    "_zc.lvd" => IsLight,
+    "_zc.pml" => PartyMembers,
+    "_zc.ppm" => PlayerPartyMember,
 );
 
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct ObjectState(HashMap<ObjectStateKey, StateData>, bool);
-
-impl Hash for ObjectState {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        for (k, v) in &self.0 {
-            k.hash(state);
-            v.hash(state);
-        }
-    }
-}
 
 impl ObjectState {
     pub fn new() -> Self {
@@ -1031,6 +1020,13 @@ impl ObjectState {
     pub fn get<T: TryFrom<StateData>>(&self, key: ObjectStateKey) -> Option<T> {
         self.0.get(&key).cloned().and_then(|v| v.try_into().ok())
     }
+    #[must_use]
+    pub fn get_mut<T>(&mut self, key: ObjectStateKey) -> Option<&mut T>
+    where
+        for<'a> &'a mut T: TryFrom<&'a mut StateData>,
+    {
+        self.0.get_mut(&key).and_then(|v| v.try_into().ok())
+    }
     #[track_caller]
     pub fn set<T: Into<StateData>>(&mut self, key: ObjectStateKey, val: T) {
         if !self.1
@@ -1086,7 +1082,7 @@ pub struct World {
     #[debug(skip)]
     pub(crate) audio_handle: rodio::MixerDeviceSink,
     #[debug(skip)]
-    pub(crate) joystick_loc: HashMap<gilrs::Axis, f32>,
+    pub(crate) axis_loc: HashMap<gilrs::Axis, f32>,
 }
 
 impl World {
@@ -1124,11 +1120,11 @@ impl World {
             current_frame_presses: HashMap::new(),
             audio_handle: handle,
             text: HashSet::new(),
-            joystick_loc: HashMap::new(),
+            axis_loc: HashMap::new(),
         }
     }
-    pub fn joystick_loc(&self, axis: gilrs::Axis) -> f32 {
-        self.joystick_loc.get(&axis).copied().unwrap_or(0.0)
+    pub fn axis_loc(&self, axis: gilrs::Axis) -> f32 {
+        self.axis_loc.get(&axis).copied().unwrap_or(0.0)
     }
     pub fn save(&mut self, save_num: u16) {
         self.internal_event_queue
@@ -1322,6 +1318,39 @@ impl World {
     pub fn action_new_up(&self, action: ActionRef) -> bool {
         matches!(self.input_state(action), InputState::NewlyReleased)
     }
+    pub fn axis_get_vec(&self, x: Axis, y: Axis) -> Offset2 {
+        Offset2 {
+            x: self.axis_loc(x),
+            y: self.axis_loc(y),
+        }
+    }
+    pub fn action_get_vec(
+        &self,
+        up: ActionRef,
+        down: ActionRef,
+        left: ActionRef,
+        right: ActionRef,
+    ) -> Offset2 {
+        let mut y = 0.0f32;
+
+        if self.action_down(up) {
+            y -= 1.0;
+        }
+        if self.action_down(down) {
+            y += 1.0;
+        }
+
+        let mut x = 0.0f32;
+
+        if self.action_down(right) {
+            x += 1.0;
+        }
+        if self.action_down(left) {
+            x -= 1.0;
+        }
+
+        Offset2 { x, y }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1341,8 +1370,9 @@ macro_rules! event_enums {
             $(#[$meta:meta])*
             $matcher:pat =>
             $variant:ident
-                $( ($($(#[$meta3:meta])* $t2:ty),* $(,)?) )?
+                $( ($($(#[$meta3:meta])* $name2:ident $t2:ty),* $(,)?) )?
                 $({$( $(#[$meta2:meta])* $name:ident: $t:ty),* $(,)?})?
+                $( $($semicolon:ident)? ; )?
             ),* $(,)?) => {
         #[derive(derive_more::Display, Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum EventName {
@@ -1351,6 +1381,26 @@ macro_rules! event_enums {
         #[derive(derive_more::Debug)]
         pub enum Event {
             $($(#[$meta])* $variant $(( $($(#[$meta3])* $t2),* ))? $({ $( $(#[$meta2])* $name: $t ),* })?),*
+        }
+        paste::paste! {
+            $(
+                #[derive(derive_more::Debug)]
+                $(#[$meta])*
+                pub struct [< Event $variant >] $(( $($(#[$meta3])* pub $t2),* );)? $({ $( $(#[$meta2])* pub $name: $t ),* })? $( $($semicolon)? ; )?
+            )*
+
+            impl Event {
+                $(
+                    #[track_caller]
+                    #[allow(non_snake_case)]
+                    pub fn [< unwrap_ $variant >] (self) -> [< Event $variant >] {
+                        match self {
+                            Self::$variant $(( $($name2),* ))? $({ $( $name ),* })? => [< Event $variant >] $(( $($name2),* ))? $({ $( $name ),* })?,
+                            _ => panic!("unwrap failed")
+                        }
+                    }
+                )*
+            }
         }
 
         impl From<&Event> for EventName {
@@ -1370,10 +1420,10 @@ pub(crate) struct SealedRoomTransition;
 
 event_enums!(
     /// Does NOT continue if DisableDefault.
-    Event::AniContinueEvent => AniContinueEvent,
+    Event::AniContinueEvent => AniContinueEvent ;,
     /// Called ~20 times a second. Duration is the delta time. DisableDefault is
     /// ignored. Called before graphics tick.
-    Event::Tick(..) => Tick(Duration),
+    Event::Tick(..) => Tick(v0 Duration),
     /// Called at most 20 times a second; Default action will attempt to push it
     /// out to where it was at the previous frame before it started colliding.
     Event::Collide{..} => Collide {
@@ -1382,16 +1432,16 @@ event_enums!(
     /// Called the full 60 times a second, after Tick when Tick is run. Duration is delta time,
     /// DisableDefault disables rendering the current sprite/animation like usual.
     Event::Render(..) => Render(
-        Duration,
-        #[debug(skip)] Arc<Mutex<crate::rt::DrawContext>>,
+        v0 Duration,
+        #[debug(skip)] v1 Arc<Mutex<crate::rt::DrawContext>>,
     ),
     /// DisableDefault has no effect. Called after all resources are loaded and
     /// initalized, but before this is presented to the player on-screen.
-    Event::Load => Load,
+    Event::Load => Load ;,
     /// Called before this object/room/world is unloaded. On the World, functions
     /// as a callback for before the game closes or is otherwise unloaded by the
     /// engine.
-    Event::Unload => Unload,
+    Event::Unload => Unload ;,
     Event::KeyPress { .. } => KeyPress {
         key: Key,
     },
@@ -1420,7 +1470,7 @@ pub struct EventArgs<'a> {
     pub world: &'a mut World,
 }
 
-#[derive(Clone, Debug, PartialEq, Hash)]
+#[derive(Clone, Debug, PartialEq)]
 #[must_use = "An event result should not be ignored"]
 pub enum EventResult {
     Default,
@@ -1734,4 +1784,23 @@ pub struct DisplayedText {
 #[derive(Clone, Debug, PartialEq)]
 pub struct LanguageData {
     pub strings: HashMap<LocalTextRef, String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Direction {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+impl From<Direction> for Vec2 {
+    fn from(value: Direction) -> Self {
+        match value {
+            Direction::Up => Vec2 { x: 0.0, y: -1.0 },
+            Direction::Down => Vec2 { x: 0.0, y: 1.0 },
+            Direction::Left => Vec2 { x: -1.0, y: 0.0 },
+            Direction::Right => Vec2 { x: 1.0, y: 0.0 },
+        }
+    }
 }

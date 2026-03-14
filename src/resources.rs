@@ -8,7 +8,12 @@ use crate::{
     objs::{self, Audio, Color, Offset2, Sprite, Vec2},
 };
 use std::{
-    collections::{HashMap, HashSet}, convert::Infallible, error::Error, io::Cursor, mem::ManuallyDrop, path::PathBuf
+    collections::{HashMap, HashSet},
+    convert::Infallible,
+    error::Error,
+    io::Cursor,
+    mem::ManuallyDrop,
+    path::PathBuf,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -290,7 +295,11 @@ impl Provider for GamemakerDataProvider {
             let name = sound.name.clone();
 
             let cursor = Cursor::new(if sound.flags.embedded {
-                let audio = sound.audio_file.unwrap().resolve(&data.audios.audios).unwrap();
+                let audio = sound
+                    .audio_file
+                    .unwrap()
+                    .resolve(&data.audios.audios)
+                    .unwrap();
 
                 audio.audio_data.clone()
             } else {
@@ -300,10 +309,18 @@ impl Provider for GamemakerDataProvider {
             });
 
             let source = Box::new(match sound.audio_type {
-                libgm::wad::elements::sound::AudioType::Mp3 => rodio::Decoder::new_mp3(cursor).unwrap(),
-                libgm::wad::elements::sound::AudioType::Unknown => rodio::Decoder::new(cursor).unwrap(),
-                libgm::wad::elements::sound::AudioType::Wav => rodio::Decoder::new_wav(cursor).unwrap(),
-                libgm::wad::elements::sound::AudioType::Ogg => rodio::Decoder::new_vorbis(cursor).unwrap(),
+                libgm::wad::elements::sound::AudioType::Mp3 => {
+                    rodio::Decoder::new_mp3(cursor).unwrap()
+                }
+                libgm::wad::elements::sound::AudioType::Unknown => {
+                    rodio::Decoder::new(cursor).unwrap()
+                }
+                libgm::wad::elements::sound::AudioType::Wav => {
+                    rodio::Decoder::new_wav(cursor).unwrap()
+                }
+                libgm::wad::elements::sound::AudioType::Ogg => {
+                    rodio::Decoder::new_vorbis(cursor).unwrap()
+                }
             });
 
             let audio = Audio::new(source, (0.0, 0.0, 0.0));

@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 derive_more = { version = "2.1.1", features = ["debug", "display"] }
 dirs = "6.0.0"
-gilrs = "0.11.1"
+gilrs = { version = "0.11.1", features = ["serde", "serde-serialize"] }
 image = "0.25.10"
 libgm = { git = "https://github.com/BioTomateDE/LibGM", version = "0.5.0-alpha" }
 macroquad = "0.4.14"
