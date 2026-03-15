@@ -1,3 +1,3 @@
 //! The component library. Focuses on deltarune stuff.
 
-pub mod party;
+pub mod world_npc;

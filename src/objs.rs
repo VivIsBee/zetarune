@@ -8,7 +8,7 @@ use std::{
     num::NonZeroU8,
     ops::{Index, IndexMut},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use gilrs::Axis;
@@ -1109,9 +1109,12 @@ pub struct World {
     pub game_id: String,
     /// The current focus in the UI.
     pub ui_focus: Option<ObjectRef>,
-    /// History of positions of the player up to 500 frames ago (~17 seconds at
-    /// 30 FPS)
-    pub primary_player_history: VecDeque<Vec2>,
+    /// History of positions and velocities of the player up to 240 frames ago (8 seconds)
+    pub primary_player_history: VecDeque<(Vec2, Offset2)>,
+    pub player_still: bool,
+    /// 0-3
+    pub sprint_stage: u8,
+    pub sprint_start: Instant,
     #[debug(skip)]
     pub(crate) text: HashSet<TextRef>,
     #[debug(skip)]
@@ -1127,6 +1130,12 @@ pub struct World {
 }
 
 impl World {
+    pub fn is_dark_world(&self) -> bool {
+        !self.is_light_world()
+    }
+    pub fn is_light_world(&self) -> bool {
+        self.state.get(ObjectStateKey::IsLight).unwrap_or(true)
+    }
     pub fn new(
         ctx: Ctx,
         current_room: RoomRef,
@@ -1156,6 +1165,9 @@ impl World {
             lang,
             game_id,
             primary_player_history: VecDeque::new(),
+            player_still: true,
+            sprint_stage: 0,
+            sprint_start: Instant::now(),
             ui_focus: None,
             event_queue: vec![],
             internal_event_queue: vec![],
@@ -1398,7 +1410,7 @@ impl World {
 #[derive(Clone, Debug, Default)]
 pub struct Room {
     /// The sprite, location, and scale of the background.
-    pub background: Option<(SpriteRef, Vec2, Offset2)>,
+    pub background: Option<(AnimationRef, Vec2, Offset2)>,
     pub objects: Vec<ObjectRef>,
     pub callbacks: Option<Callbacks>,
     pub state: ObjectState,

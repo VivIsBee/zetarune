@@ -4,6 +4,7 @@ use std::{
     num::NonZeroU8,
     ops::Deref,
     sync::atomic::AtomicUsize,
+    time::{Duration, Instant},
 };
 
 use macroquad::input::KeyCode;
@@ -85,6 +86,7 @@ impl WorldCharacterBuilder {
 
                     crate::objs::EventResult::Default
                 });
+            camera.state.set(ObjectStateKey::ZLayer, isize::MAX);
 
             world.camera_obj = world.ctx.add_obj("zeta_camera".to_string(), camera);
 
@@ -96,6 +98,7 @@ impl WorldCharacterBuilder {
         let down = world.ctx.add_action("zeta_player_down".to_string());
         let left = world.ctx.add_action("_zeta_player_left".to_string());
         let right = world.ctx.add_action("zeta_player_right".to_string());
+        let sprint = world.ctx.add_action("zeta_player_sprint".to_string());
 
         world.add_mapping(up, Key::Keyboard(KeyCode::Up));
         world.add_mapping(down, Key::Keyboard(KeyCode::Down));
@@ -107,12 +110,26 @@ impl WorldCharacterBuilder {
         world.add_mapping(left, Key::Keyboard(KeyCode::A));
         world.add_mapping(right, Key::Keyboard(KeyCode::D));
 
+        world.add_mapping(sprint, Key::Keyboard(KeyCode::X));
+
         let mut obj = Object {
             sheet: Some(self.character_sheet),
-            collider: self.collider,
+            collider: if self.is_player {
+                self.collider
+            } else {
+                vec![]
+            },
             static_body: false,
             state: ObjectState::new(),
-            callbacks: Some(Self::callbacks(self.is_player, self.is_lightner, up, down, left, right)),
+            callbacks: Some(Self::callbacks(
+                self.is_player,
+                self.is_lightner,
+                up,
+                down,
+                left,
+                right,
+                sprint,
+            )),
         };
 
         obj.state.set(ObjectStateKey::Pos, Vec2::ZERO);
@@ -146,10 +163,12 @@ impl WorldCharacterBuilder {
         down: ActionRef,
         left: ActionRef,
         right: ActionRef,
+        sprint: ActionRef,
     ) -> Callbacks {
         let mut out = Callbacks::new();
         if is_player {
-            out.set(crate::objs::EventName::Tick, move |_, args| {
+            out.set(crate::objs::EventName::Tick, move |ev, args| {
+                let delta = ev.unwrap_Tick().0;
                 let world = args.world;
                 let obj_r = args.obj.unwrap();
 
@@ -162,7 +181,59 @@ impl WorldCharacterBuilder {
                         vel = world.axis_get_vec(gilrs::Axis::DPadX, gilrs::Axis::DPadY);
                     }
 
-                    vel * 6.0
+                    if world.action_down(sprint) {
+                        world.sprint_stage = match world.sprint_stage {
+                            0 => {
+                                world.sprint_start = Instant::now();
+                                1
+                            }
+                            1 => {
+                                if world.sprint_start.elapsed()
+                                    >= Duration::from_secs_f64(1.0 / 3.0)
+                                {
+                                    2
+                                } else {
+                                    1
+                                }
+                            }
+                            2 => {
+                                if world.sprint_start.elapsed() >= Duration::from_secs(2) {
+                                    3
+                                } else {
+                                    2
+                                }
+                            }
+                            3 => 3,
+                            _ => unreachable!(),
+                        };
+                    } else {
+                        world.sprint_stage = 0;
+                    }
+
+                    let speed = ((if world.is_light_world() {
+                        6.0 + if world.sprint_stage == 1 {
+                            2.0
+                        } else if world.sprint_stage == 2 {
+                            4.0
+                        } else if world.sprint_stage == 3 {
+                            6.0
+                        } else {
+                            0.0
+                        }
+                    } else {
+                        4.0 + if world.sprint_stage == 1 {
+                            2.0
+                        } else if world.sprint_stage == 2 {
+                            4.0
+                        } else if world.sprint_stage == 3 {
+                            5.0
+                        } else {
+                            0.0
+                        }
+                    }) * 30.0)
+                        * delta.as_secs_f32();
+                    
+                    vel * speed
                 };
 
                 let obj = world.ctx.get_mut_object(obj_r);
@@ -176,7 +247,8 @@ impl WorldCharacterBuilder {
                     format!(
                         "{}{}",
                         dir.to_char(),
-                        if (!world.state.get(ObjectStateKey::IsLight).unwrap_or(true))
+                        if (!world.state.get(ObjectStateKey::IsLight).unwrap_or(true)
+                            || !obj.state.get(ObjectStateKey::IsLight).unwrap_or(true))
                             && is_lightner
                         {
                             "_dark"
@@ -188,13 +260,24 @@ impl WorldCharacterBuilder {
 
                 if vel != Offset2::ZERO {
                     obj.state.set(ObjectStateKey::Playing, true);
+                    if let Some(pos) = obj.state.get_mut::<Vec2>(ObjectStateKey::Pos) {
+                        *pos += vel;
+                        world.primary_player_history.push_front((*pos, vel));
+                    }
+                    world.player_still = false;
                 } else {
                     obj.state.set(ObjectStateKey::Playing, false);
                     obj.state.set(ObjectStateKey::AniFrame, 0usize);
+                    if !world.player_still {
+                        world
+                            .primary_player_history
+                            .push_front((obj.get_position().unwrap_or(Vec2::ZERO), vel));
+                        world.player_still = true;
+                    }
                 }
 
-                if let Some(pos) = obj.state.get_mut::<Vec2>(ObjectStateKey::Pos) {
-                    *pos += vel;
+                if world.primary_player_history.len() > 240 {
+                    world.primary_player_history.pop_back();
                 }
 
                 crate::objs::EventResult::Default
@@ -203,37 +286,66 @@ impl WorldCharacterBuilder {
             out.set(crate::objs::EventName::Tick, move |_, args| {
                 let world = args.world;
                 let obj_r = args.obj.unwrap();
-
-                let vel = {
-                    let mut vel = world.action_get_vec(up, down, left, right);
-                    if vel == Offset2::ZERO {
-                        vel = world.axis_get_vec(gilrs::Axis::LeftStickX, gilrs::Axis::LeftStickY);
-                    }
-                    if vel == Offset2::ZERO {
-                        vel = world.axis_get_vec(gilrs::Axis::DPadX, gilrs::Axis::DPadY);
-                    }
-
-                    vel * 6.0
-                };
-
                 let obj = world.ctx.get_mut_object(obj_r);
 
-                let current_dir = obj.state.get(ObjectStateKey::CurrentPlayerDir);
-                let dir = vel.dir(current_dir).unwrap_or(Direction::Down);
-                obj.state.set(ObjectStateKey::CurrentPlayerDir, dir);
+                if let Some(party_i) = obj.state.get::<usize>(ObjectStateKey::PartyMemberI)
+                    && let Some((pos, vel)) = world
+                        .primary_player_history
+                        .get(30 * party_i)
+                        .copied()
+                        .or_else(|| obj.get_position().map(|v| (v, Offset2::ZERO)))
+                    && vel != Offset2::ZERO
+                    && !world.player_still
+                {
+                    let current_dir = obj.state.get(ObjectStateKey::CurrentPlayerDir);
+                    let dir = vel.dir(current_dir).unwrap_or(Direction::Down);
+                    obj.state.set(ObjectStateKey::CurrentPlayerDir, dir);
 
-                obj.state
-                    .set(ObjectStateKey::Animation, dir.to_char().to_string());
+                    obj.state.set(
+                        ObjectStateKey::Animation,
+                        format!(
+                            "{}{}",
+                            dir.to_char(),
+                            if (!world.state.get(ObjectStateKey::IsLight).unwrap_or(true)
+                                || !obj.state.get(ObjectStateKey::IsLight).unwrap_or(true))
+                                && is_lightner
+                            {
+                                "_dark"
+                            } else {
+                                ""
+                            }
+                        ),
+                    );
 
-                if vel != Offset2::ZERO {
-                    obj.state.set(ObjectStateKey::Playing, true);
+                    if vel != Offset2::ZERO {
+                        obj.state.set(ObjectStateKey::Playing, true);
+                    } else {
+                        obj.state.set(ObjectStateKey::Playing, false);
+                        obj.state.set(ObjectStateKey::AniFrame, 0usize);
+                    }
+
+                    obj.state.set(ObjectStateKey::Pos, pos);
                 } else {
+                    let current_dir = obj.state.get(ObjectStateKey::CurrentPlayerDir).unwrap_or(Direction::Down);
+
+                    obj.state.set(
+                        ObjectStateKey::Animation,
+                        format!(
+                            "{}{}",
+                            current_dir.to_char(),
+                            if (!world.state.get(ObjectStateKey::IsLight).unwrap_or(true)
+                                || !obj.state.get(ObjectStateKey::IsLight).unwrap_or(true))
+                                && is_lightner
+                            {
+                                "_dark"
+                            } else {
+                                ""
+                            }
+                        ),
+                    );
+                    
                     obj.state.set(ObjectStateKey::Playing, false);
                     obj.state.set(ObjectStateKey::AniFrame, 0usize);
-                }
-
-                if let Some(pos) = obj.state.get_mut::<Vec2>(ObjectStateKey::Pos) {
-                    *pos += vel;
                 }
 
                 crate::objs::EventResult::Default

@@ -6,7 +6,6 @@ use std::{
     mem::ManuallyDrop,
     path::PathBuf,
     sync::{Arc, Mutex},
-    thread,
     time::{Duration, Instant},
 };
 
@@ -22,8 +21,8 @@ use crate::{
     ctx::{AudioRef, EntryRef, ObjectRef, RoomRef},
     error,
     objs::{
-        AniEvent, Color, DisplayedText, Event, EventArgs, EventResult, Font, LanguageData,
-        ObjectStateKey, Offset2, Sprite, Vec2, World,
+        AniEvent, DisplayedText, Event, EventArgs, EventResult, Font, LanguageData, ObjectStateKey,
+        Offset2, Sprite, Vec2, World,
     },
     warn,
 };
@@ -228,6 +227,7 @@ pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
             miniquad_conf: macroquad::window::Conf {
                 window_title: window_title.to_string(),
                 window_resizable: resizable,
+                
                 ..Default::default()
             },
             ..Default::default()
@@ -339,37 +339,16 @@ pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
                 )
                 .await;
 
+                next_frame().await;
+
                 last_start_t = start_t;
-                let mut last_t = Instant::now();
-                let mut dur = last_t.duration_since(start_t);
-
-                if dur < total_ideal_frametime {
-                    // println!("frametime of {dur:?}, sleeping for {:?}", total_ideal_frametime -
-                    // dur);
-                    thread::sleep((total_ideal_frametime - dur) - Duration::from_millis(1));
-
-                    last_t = Instant::now();
-                    dur = last_t.duration_since(start_t);
-
-                    let wakeup = Instant::now() + (total_ideal_frametime.saturating_sub(dur));
-
-                    while Instant::now() < wakeup {
-                        // don't yield to system scheduler and instead busy wait with a spin loop
-                        // hint; yielding to scheduler defeats the point of busy waiting here
-                        core::hint::spin_loop();
-                    }
-
-                    last_t = Instant::now();
-                    dur = last_t.duration_since(start_t);
-                }
+                let dur = start_t.elapsed();
 
                 if timer.as_millis() % 1000 < total_ideal_frametime.as_millis()
                     || dur > Duration::from_millis(50)
                 {
                     println!("{} FPS ({dur:?} per frame)", 1.0 / dur.as_secs_f64());
                 }
-
-                next_frame().await;
             }
         })(),
     );
@@ -614,9 +593,20 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
             .collect::<Vec<_>>(),
     );
 
-    objs.sort_by_cached_key(|v| world.ctx.get_object(v.0).get_z_layer().unwrap_or(0));
-
-    objs.reverse();
+    objs.sort_unstable_by(|a, b| {
+        let a = world.ctx.get_object(a.0);
+        let b = world.ctx.get_object(b.0);
+        if a.get_z_layer().is_none() || b.get_z_layer().is_none() {
+            a.get_position().map(|v| v.y).partial_cmp(&b.get_position().map(|v| v.y)).unwrap()
+        } else if a.get_z_layer().is_some() {
+            std::cmp::Ordering::Greater
+        } else if b.get_z_layer().is_some() {
+            std::cmp::Ordering::Less
+        } else {
+            b.get_z_layer().unwrap().cmp(&a.get_z_layer().unwrap())
+        }
+    });
+    objs.push((world.camera_obj, None)); // may duplicate but we need to ensure the camera is updated last
 
     let mut collided = HashSet::new(); // needed to prevent double-reporting each collision
     for (obj1, room1) in &objs {
@@ -626,6 +616,10 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
         } else {
             continue;
         };
+
+        if obj1_colliders.is_empty() {
+            continue;
+        }
 
         for (obj2, room2) in &objs {
             let mut objs = [*obj1, *obj2];
@@ -640,6 +634,10 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
             } else {
                 continue;
             };
+
+            if obj2_colliders.is_empty() {
+                continue;
+            }
 
             'collider_loop1: for collider1 in obj1_colliders {
                 for collider2 in obj2_colliders {
@@ -879,18 +877,98 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
         world,
         &objs,
         |_, _| {},
-        |world, res, _| match res {
+        |world, res, room_r| match res {
             Some(EventResult::DisableDefault) => {}
             _ => {
-                if let Some((sprite, pos, scale)) =
-                    world.ctx.get_room(world.current_room).background
-                {
-                    draw_ctx.lock().unwrap().draw_sprite(
-                        world.ctx.get_sprite(sprite).clone(),
-                        scale,
-                        pos,
-                        0.0,
-                    );
+                let room = world.ctx.get_room(room_r);
+                if let Some((ani, pos, scale)) = room.background {
+                    let ani = world.ctx.get_animation(ani);
+                    let frame = room.state.get(ObjectStateKey::AniFrame).unwrap_or(0usize);
+
+                    let timeline = &ani.timeline;
+
+                    let sprite = match timeline[frame] {
+                        AniEvent::PausePoint => {
+                            let mut out_sprite = None;
+                            for event in &timeline[..frame] {
+                                match event {
+                                    AniEvent::PausePoint => {}
+                                    AniEvent::Sprite {
+                                        sprite,
+                                        frame_count: _,
+                                    } => {
+                                        out_sprite = Some(*sprite);
+                                    }
+                                }
+                            }
+                            out_sprite
+                        }
+                        AniEvent::Sprite {
+                            sprite,
+                            frame_count: _,
+                        } => Some(sprite),
+                    };
+
+                    if let Some(sprite) = sprite {
+                        draw_ctx.lock().unwrap().draw_sprite(
+                            world.ctx.get_sprite(sprite).clone(),
+                            scale,
+                            pos,
+                            0.0,
+                        );
+                    }
+
+                    let mut frame_timer = room
+                        .state
+                        .get(ObjectStateKey::AniFrameTimer)
+                        .unwrap_or(Duration::ZERO);
+
+                    let frame_count =
+                        match timeline[room.state.get(ObjectStateKey::AniFrame).unwrap_or(0)] {
+                            AniEvent::Sprite {
+                                sprite: _,
+                                frame_count,
+                            } => Some(frame_count.get()),
+                            AniEvent::PausePoint => None,
+                        };
+
+                    if let Some(frame_count) = frame_count
+                        && ani.fps > 0
+                        && frame_timer.as_millis()
+                            >= ((1000 / ani.fps as u128) * frame_count as u128)
+                    {
+                        let mut new_frame = room
+                            .state
+                            .get(ObjectStateKey::AniFrame)
+                            .map_or(0, |v: usize| v + 1);
+
+                        if new_frame >= ani.timeline.len() {
+                            if ani.loops {
+                                new_frame = 0;
+                            } else {
+                                new_frame = ani.timeline.len() - 1;
+                                world
+                                    .ctx
+                                    .get_mut_room(room_r)
+                                    .state
+                                    .set(ObjectStateKey::Playing, false);
+                            }
+                        }
+
+                        frame_timer = Duration::ZERO;
+                        world
+                            .ctx
+                            .get_mut_room(room_r)
+                            .state
+                            .set(ObjectStateKey::AniFrame, new_frame);
+                    } else {
+                        frame_timer += delta;
+                    }
+                    world
+                        .ctx
+                        .get_mut_room(room_r)
+                        .state
+                        .set(ObjectStateKey::AniFrameTimer, frame_timer);
                 }
             }
         },
@@ -1043,13 +1121,7 @@ impl DrawContext {
 
         let center = top_left - (sprite.get_size() / 2.0);
 
-        let mut data = ManuallyDrop::new(
-            sprite
-                .data
-                .iter()
-                .map(|v| v.multiply_alpha(Color::BLACK))
-                .collect::<Vec<_>>(),
-        );
+        let mut data = ManuallyDrop::new(sprite.data);
 
         let len = data.len();
         let cap = data.capacity();
