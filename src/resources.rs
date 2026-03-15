@@ -5,7 +5,7 @@ use libgm::wad::ParsingOptions;
 
 use crate::{
     ctx::Ctx,
-    objs::{self, Audio, Color, Offset2, Sprite, Vec2, World},
+    objs::{self, Audio, Color, Offset2, Sprite, Vec2},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -247,19 +247,18 @@ impl Provider for GamemakerDataProvider {
         }
     }
     fn present(&mut self) -> Result<(), Self::Error> {
-        // let file = rfd::FileDialog::new()
-        //     .add_filter("Gamemaker Data File", &["win", "unx", "droid", "ios"])
-        //     .set_title(format!("Select {} Data File", self.source_game))
-        //     .set_can_create_directories(false)
-        //     .set_directory(
-        //         std::env::current_exe()
-        //             .ok()
-        //             .map(|v| v.parent().unwrap().to_owned())
-        //             .or_else(|| std::env::current_dir().ok())
-        //             .unwrap_or(PathBuf::from(".")),
-        //     )
-        //     .pick_file();
-        let file = Some("/home/vivian/deltarune/chapter1_windows/data.win");
+        let file = rfd::FileDialog::new()
+            .add_filter("Gamemaker Data File", &["win", "unx", "droid", "ios"])
+            .set_title(format!("Select {} Data File", self.source_game))
+            .set_can_create_directories(false)
+            .set_directory(
+                std::env::current_exe()
+                    .ok()
+                    .map(|v| v.parent().unwrap().to_owned())
+                    .or_else(|| std::env::current_dir().ok())
+                    .unwrap_or(PathBuf::from(".")),
+            )
+            .pick_file();
 
         let file = file.expect("path to data file must be provided");
 
