@@ -24,7 +24,6 @@ pub struct WorldCharacterBuilder {
     pub is_lightner: bool,
     pub party_member_i: Option<usize>,
     pub character_sheet: AniSheetRef,
-    pub collider: Vec<Collider>,
 }
 
 impl WorldCharacterBuilder {
@@ -34,7 +33,6 @@ impl WorldCharacterBuilder {
             is_lightner,
             party_member_i: None,
             character_sheet,
-            collider: vec![],
         }
     }
     pub fn player(mut self) -> Self {
@@ -51,10 +49,6 @@ impl WorldCharacterBuilder {
     }
     pub fn not_party_member(mut self) -> Self {
         self.party_member_i = None;
-        self
-    }
-    pub fn add_collider(mut self, mut collider: Vec<Collider>) -> Self {
-        self.collider.append(&mut collider);
         self
     }
     pub fn create(self, world: &mut World) -> WorldCharacter {
@@ -96,7 +90,7 @@ impl WorldCharacterBuilder {
         static PM_NUM: AtomicUsize = AtomicUsize::new(0);
         let up = world.ctx.add_action("zeta_player_up".to_string());
         let down = world.ctx.add_action("zeta_player_down".to_string());
-        let left = world.ctx.add_action("_zeta_player_left".to_string());
+        let left = world.ctx.add_action("zeta_player_left".to_string());
         let right = world.ctx.add_action("zeta_player_right".to_string());
         let sprint = world.ctx.add_action("zeta_player_sprint".to_string());
 
@@ -115,9 +109,14 @@ impl WorldCharacterBuilder {
         let mut obj = Object {
             sheet: Some(self.character_sheet),
             collider: if self.is_player {
-                self.collider
+                vec![Collider {
+                    t: crate::objs::ColliderType::Rect {
+                        size: Offset2 { x: 19.0, y: 38.0 },
+                    },
+                    off: Offset2::ZERO,
+                }]
             } else {
-                vec![]
+                Vec::new()
             },
             static_body: false,
             state: ObjectState::new(),
@@ -232,7 +231,7 @@ impl WorldCharacterBuilder {
                         }
                     }) * 30.0)
                         * delta.as_secs_f32();
-                    
+
                     vel * speed
                 };
 
@@ -326,7 +325,10 @@ impl WorldCharacterBuilder {
 
                     obj.state.set(ObjectStateKey::Pos, pos);
                 } else {
-                    let current_dir = obj.state.get(ObjectStateKey::CurrentPlayerDir).unwrap_or(Direction::Down);
+                    let current_dir = obj
+                        .state
+                        .get(ObjectStateKey::CurrentPlayerDir)
+                        .unwrap_or(Direction::Down);
 
                     obj.state.set(
                         ObjectStateKey::Animation,
@@ -343,7 +345,7 @@ impl WorldCharacterBuilder {
                             }
                         ),
                     );
-                    
+
                     obj.state.set(ObjectStateKey::Playing, false);
                     obj.state.set(ObjectStateKey::AniFrame, 0usize);
                 }

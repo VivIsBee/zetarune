@@ -3,9 +3,9 @@
 use std::collections::{HashMap, HashSet};
 
 use zetarune::{
-    components::world_npc::{self, WorldCharacterBuilder},
+    components::{dialogue::{DialogueItem, Dialoguer, TextItem}, world_npc::{self, WorldCharacterBuilder}},
     ctx::{Ctx, ObjectRef, RoomRef},
-    objs::{Collider, ColliderType, LanguageData, ObjectState, Offset2, Room, World},
+    objs::{LanguageData, ObjectState, Room, World},
     resources::{self, Provider},
 };
 
@@ -32,11 +32,17 @@ fn main() {
     //     },
     // );
 
+    let text = ctx.add_local_text("example".to_string());
+
+    let mut lang = LanguageData {
+        strings: HashMap::new(),
+    };
+
+    lang.strings.insert(text, "HelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHello".to_string());
+
     let lang = ctx.add_lang(
-        "n/a".to_string(),
-        LanguageData {
-            strings: HashMap::new(),
-        },
+        "en-US".to_string(),
+        lang,
     );
 
     let placeholder_room = RoomRef::default(&mut ctx);
@@ -79,12 +85,6 @@ fn main() {
     );
 
     let obj1 = WorldCharacterBuilder::new(sheet1, true)
-        .add_collider(vec![Collider {
-            t: ColliderType::Rect {
-                size: Offset2 { x: 50.0, y: 50.0 },
-            },
-            off: Offset2::ZERO,
-        }])
         .player()
         .create(&mut world)
         .add_to_party(&mut world);
@@ -94,23 +94,11 @@ fn main() {
         .set(zetarune::objs::ObjectStateKey::IsLight, false);
 
     let obj2 = WorldCharacterBuilder::new(sheet2, false)
-        .add_collider(vec![Collider {
-            t: ColliderType::Rect {
-                size: Offset2 { x: 50.0, y: 50.0 },
-            },
-            off: Offset2::ZERO,
-        }])
         .party_member(1)
         .create(&mut world)
         .add_to_party(&mut world);
 
     let obj3 = WorldCharacterBuilder::new(sheet3, true)
-        .add_collider(vec![Collider {
-            t: ColliderType::Rect {
-                size: Offset2 { x: 50.0, y: 50.0 },
-            },
-            off: Offset2::ZERO,
-        }])
         .party_member(2)
         .create(&mut world)
         .add_to_party(&mut world);
@@ -127,6 +115,13 @@ fn main() {
     );
 
     world.current_room = room;
+
+    Dialoguer::new(&mut world);
+
+    world.push_dialogue(DialogueItem {
+        text: vec![TextItem::Text(text)].into(),
+        small_extra: None
+    });
 
     let mut provider = resources::GamemakerDataProvider::new(
         "DELTARUNE: Chapter 1",

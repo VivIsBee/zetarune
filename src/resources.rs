@@ -5,7 +5,7 @@ use libgm::wad::ParsingOptions;
 
 use crate::{
     ctx::Ctx,
-    objs::{self, Audio, Color, Offset2, Sprite, Vec2},
+    objs::{self, Audio, Color, Font, Offset2, Sprite, Vec2},
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -125,20 +125,20 @@ impl Provider for CompressedStaticAssetProvider {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Hash)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub struct SpriteSheet {
     /// Source ID
-    pub id: &'static str,
+    pub id: String,
     /// Pairs of (location, size, ID).
-    pub sections: &'static [(Vec2, Offset2, &'static str)],
+    pub sections: Vec<(Vec2, Offset2, String)>,
 }
 
 pub struct SpriteSheetProvider {
-    sheets: &'static [SpriteSheet],
+    sheets: Vec<SpriteSheet>,
 }
 
 impl SpriteSheetProvider {
-    pub const fn new(sheets: &'static [SpriteSheet]) -> Self {
+    pub const fn new(sheets: Vec<SpriteSheet>) -> Self {
         Self { sheets }
     }
 }
@@ -155,10 +155,10 @@ impl Provider for SpriteSheetProvider {
         Ok(())
     }
     fn load(&mut self, ctx: &mut Ctx, namespace: &str) -> Result<(), Self::Error> {
-        for SpriteSheet { id, sections } in self.sheets {
+        for SpriteSheet { id, sections } in &self.sheets {
             let sprite_r = ctx.get_sprite_id_ref(id).unwrap();
 
-            for (loc, size, id) in *sections {
+            for (loc, size, id) in sections {
                 let sprite = ctx.get_sprite(sprite_r);
                 let out_sprite = sprite.slice(*loc, *size).unwrap();
 
@@ -329,6 +329,49 @@ impl Provider for GamemakerDataProvider {
             let audio = Audio::new(source, (0.0, 0.0, 0.0));
 
             ctx.add_audio(format!("{namespace}:{name}"), audio);
+        }
+
+        for font in &data.fonts.fonts {
+            let mut out = Font::default();
+            out.line_height = font.line_height.unwrap_or(16) as u16;
+
+            let mut spritesheet = SpriteSheet {
+                id: format!("{namespace}:{}_texture_page", font.name),
+                sections: vec![],
+            };
+
+            for (i, glyph) in font.glyphs.iter().enumerate() {
+                out.char_index_map
+                    .insert(glyph.character.unwrap(), out.char_index_map.len());
+                let sprite_r = ctx.add_placeholder_sprite(format!("{namespace}:{}_{i}", font.name));
+
+                out.sprites.push((sprite_r, glyph.shift_modifier as u16));
+                spritesheet.sections.push((
+                    Vec2 {
+                        x: glyph.x as f32,
+                        y: glyph.y as f32,
+                    },
+                    Offset2 {
+                        x: glyph.width as f32,
+                        y: glyph.height as f32,
+                    },
+                    format!("{}_{i}", font.name),
+                ));
+            }
+
+            let spr = self.get_sprite_from_page_item(
+                font.texture
+                    .resolve(&data.texture_page_items.texture_page_items)
+                    .unwrap(),
+            );
+
+            ctx.add_sprite(format!("{namespace}:{}_texture_page", font.name), spr);
+
+            let mut provider = SpriteSheetProvider::new(vec![spritesheet]);
+            provider.present().unwrap();
+            provider.load(ctx, namespace).unwrap();
+
+            ctx.add_font(format!("{namespace}:{}", font.name), out);
         }
 
         Ok(())

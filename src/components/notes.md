@@ -1,14 +1,5 @@
 # Component Library Notes
 
-- light/dark world distinction
-- player
-    - animations
-    - separate textures for light/dark world
 - dialogue
-    - faces (optional)
+    - faces (sometimes present, sometimes not)
     - dialogue DSL
-
-initial:
-
-- basic player/party member controller
-- path rememberance and following for multiple character parties

@@ -21,8 +21,8 @@ use crate::{
     ctx::{AudioRef, EntryRef, ObjectRef, RoomRef},
     error,
     objs::{
-        AniEvent, DisplayedText, Event, EventArgs, EventResult, Font, LanguageData, ObjectStateKey,
-        Offset2, Sprite, Vec2, World,
+        AniEvent, DisplayedText, Event, EventArgs, EventResult, Font, ObjectStateKey, Offset2,
+        Sprite, Vec2, World,
     },
     warn,
 };
@@ -227,7 +227,7 @@ pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
             miniquad_conf: macroquad::window::Conf {
                 window_title: window_title.to_string(),
                 window_resizable: resizable,
-                
+
                 ..Default::default()
             },
             ..Default::default()
@@ -358,6 +358,7 @@ pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum EventTarget {
     Object(ObjectRef, Option<RoomRef>),
+    DuoObject([(ObjectRef, Option<RoomRef>); 2]),
     Room(RoomRef),
     World,
     All,
@@ -597,7 +598,10 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
         let a = world.ctx.get_object(a.0);
         let b = world.ctx.get_object(b.0);
         if a.get_z_layer().is_none() || b.get_z_layer().is_none() {
-            a.get_position().map(|v| v.y).partial_cmp(&b.get_position().map(|v| v.y)).unwrap()
+            a.get_position()
+                .map(|v| v.y)
+                .partial_cmp(&b.get_position().map(|v| v.y))
+                .unwrap()
         } else if a.get_z_layer().is_some() {
             std::cmp::Ordering::Greater
         } else if b.get_z_layer().is_some() {
@@ -645,14 +649,28 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
                         let obj1 = *obj1;
                         let obj2 = *obj2;
 
-                        world.event_queue.push((
-                            EventTarget::Object(obj1, *room1),
-                            Box::new(move || Event::Collide { other: obj2 }),
-                        ));
-                        world.event_queue.push((
-                            EventTarget::Object(obj2, *room2),
-                            Box::new(move || Event::Collide { other: obj1 }),
-                        ));
+                        if world.player.contains(&obj1) {
+                            world.event_queue.push((
+                                EventTarget::DuoObject([(obj1, *room1), (obj2, *room2)]),
+                                Box::new(move || Event::PlayerCollide {
+                                    player: obj1,
+                                    other: obj2,
+                                }),
+                            ));
+                        } else if world.player.contains(&obj2) {
+                            world.event_queue.push((
+                                EventTarget::DuoObject([(obj1, *room1), (obj2, *room2)]),
+                                Box::new(move || Event::PlayerCollide {
+                                    player: obj2,
+                                    other: obj1,
+                                }),
+                            ));
+                        } else {
+                            world.event_queue.push((
+                                EventTarget::DuoObject([(obj1, *room1), (obj2, *room2)]),
+                                Box::new(move || Event::Collide { objs: [obj1, obj2] }),
+                            ));
+                        }
                         collided.insert(objs);
 
                         break 'collider_loop1;
@@ -680,10 +698,6 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
                 let ev = event();
 
                 let is_ani_continue = matches!(ev, Event::AniContinueEvent);
-                let is_collision = match ev {
-                    Event::Collide { other } => Some(other),
-                    _ => None,
-                };
 
                 let res = if let Some(callbacks) = world.ctx.get_object(obj_r).callbacks.clone() {
                     callbacks.trigger(
@@ -716,74 +730,6 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
                                     .set(ObjectStateKey::AniFrame, frame + 1);
                             }
                         }
-                    }
-                } else if let Some(other_r) = is_collision
-                    && res != Some(EventResult::DisableDefault)
-                {
-                    let obj_static_body = world.ctx.get_object(obj_r).static_body;
-                    let other_static_body = world.ctx.get_object(other_r).static_body;
-
-                    let pos1 = if let Some(pos) = world.ctx.get_object(obj_r).get_position() {
-                        pos
-                    } else {
-                        warn!(
-                            "please don't remove the position of colliding objects and still return EventResult::Default - it fucks with default collision"
-                        );
-                        continue;
-                    };
-                    let pos2 = if let Some(pos) = world.ctx.get_object(other_r).get_position() {
-                        pos
-                    } else {
-                        warn!(
-                            "please don't remove the position of colliding objects and still return EventResult::Default - it fucks with default collision"
-                        );
-                        continue;
-                    };
-
-                    let mut offset = None;
-
-                    'collider1_loop: for collider1 in &world.ctx.get_object(obj_r).collider {
-                        for collider2 in &world.ctx.get_object(other_r).collider {
-                            if let Some(overlap) = collider1.outside_overlap(pos1, *collider2, pos2)
-                            {
-                                offset = Some(overlap);
-                                break 'collider1_loop;
-                            }
-                        }
-                    }
-                    if offset.is_none() {
-                        warn!(
-                            "please don't move colliding objects and still return EventResult::Default - it fucks with default collision"
-                        );
-                        continue;
-                    }
-                    let offset = offset.unwrap();
-
-                    if (!obj_static_body) && (!other_static_body) {
-                        world
-                            .ctx
-                            .get_mut_object(obj_r)
-                            .state
-                            .set(ObjectStateKey::Pos, pos1 - (offset / 2.0));
-                        world
-                            .ctx
-                            .get_mut_object(other_r)
-                            .state
-                            .set(ObjectStateKey::Pos, pos2 + (offset / 2.0));
-                    } else if obj_static_body && (!other_static_body) {
-                        world
-                            .ctx
-                            .get_mut_object(other_r)
-                            .state
-                            .set(ObjectStateKey::Pos, pos2 + offset);
-                    } else if (!obj_static_body) && other_static_body {
-                        world
-                            .ctx
-                            .get_mut_object(obj_r)
-                            .state
-                            .set(ObjectStateKey::Pos, pos1 + offset);
-                    } else {
-                        println!("aaaa {obj_static_body}+{other_static_body}")
                     }
                 }
             }
@@ -822,6 +768,122 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
                     |_, _, _| {},
                 );
             }
+            EventTarget::DuoObject(objs) => {
+                let ev = event();
+
+                let is_collision = matches!(ev, Event::Collide { objs: _ });
+                let is_player_collision = matches!(
+                    ev,
+                    Event::PlayerCollide {
+                        player: _,
+                        other: _
+                    }
+                );
+
+                let res1 =
+                    if let Some(callbacks) = world.ctx.get_object(objs[0].0).callbacks.clone() {
+                        callbacks.trigger(
+                            ev,
+                            EventArgs {
+                                room: objs[0].1,
+                                obj: Some(objs[0].0),
+                                world,
+                            },
+                        )
+                    } else {
+                        None
+                    };
+
+                let ev = event();
+                let res2 =
+                    if let Some(callbacks) = world.ctx.get_object(objs[1].0).callbacks.clone() {
+                        callbacks.trigger(
+                            ev,
+                            EventArgs {
+                                room: objs[1].1,
+                                obj: Some(objs[1].0),
+                                world,
+                            },
+                        )
+                    } else {
+                        None
+                    };
+
+                if (is_collision || is_player_collision)
+                    && res1 != Some(EventResult::DisableDefault)
+                    && res2 != Some(EventResult::DisableDefault)
+                {
+                    let obj_static_body = world.ctx.get_object(objs[0].0).static_body;
+                    let other_static_body = world.ctx.get_object(objs[1].0).static_body;
+
+                    if (!obj_static_body) && (!other_static_body) {
+                        // both static, ignore
+                    }
+
+                    let pos1 = if let Some(pos) = world.ctx.get_object(objs[0].0).get_position() {
+                        pos
+                    } else {
+                        warn!(
+                            "please don't remove the position of colliding objects and still return EventResult::Default - it fucks with default collision"
+                        );
+                        continue;
+                    };
+                    let pos2 = if let Some(pos) = world.ctx.get_object(objs[1].0).get_position() {
+                        pos
+                    } else {
+                        warn!(
+                            "please don't remove the position of colliding objects and still return EventResult::Default - it fucks with default collision"
+                        );
+                        continue;
+                    };
+
+                    let mut offset = None;
+
+                    'collider1_loop: for collider1 in &world.ctx.get_object(objs[0].0).collider {
+                        for collider2 in &world.ctx.get_object(objs[1].0).collider {
+                            if let Some(overlap) = collider1.outside_overlap(pos1, *collider2, pos2)
+                            {
+                                offset = Some(overlap);
+                                break 'collider1_loop;
+                            }
+                        }
+                    }
+                    if offset.is_none() {
+                        warn!(
+                            "please don't move colliding objects and still return EventResult::Default - it fucks with default collision"
+                        );
+                        continue;
+                    }
+                    let offset = offset.unwrap();
+
+                    if (!obj_static_body) && (!other_static_body) {
+                        world
+                            .ctx
+                            .get_mut_object(objs[0].0)
+                            .state
+                            .set(ObjectStateKey::Pos, pos1 - (offset / 2.0));
+                        world
+                            .ctx
+                            .get_mut_object(objs[1].0)
+                            .state
+                            .set(ObjectStateKey::Pos, pos2 + (offset / 2.0));
+                    } else if obj_static_body && (!other_static_body) {
+                        world
+                            .ctx
+                            .get_mut_object(objs[1].0)
+                            .state
+                            .set(ObjectStateKey::Pos, pos2 + offset);
+                    } else if (!obj_static_body) && other_static_body {
+                        world
+                            .ctx
+                            .get_mut_object(objs[0].0)
+                            .state
+                            .set(ObjectStateKey::Pos, pos1 + offset);
+                    } else {
+                        println!("aaaa {obj_static_body}+{other_static_body}")
+                    }
+                }
+            }
         }
     }
 
@@ -849,7 +911,6 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
             .cloned()
             .map(|v| v.unwrap())
             .collect(),
-        world.ctx.get_lang(world.lang).clone(),
     )));
 
     for text in &world.text {
@@ -1095,22 +1156,16 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
 /// please don't :c
 ///
 /// Everything is in world coordinates, except for specific scenarios like text.
-pub struct DrawContext(Vec2, Offset2, Vec<Font>, Vec<Sprite>, LanguageData);
+pub struct DrawContext(Vec2, Offset2, Vec<Font>, Vec<Sprite>);
 
 impl DrawContext {
-    fn new(
-        camera_pos: Vec2,
-        screen_size: Offset2,
-        fonts: Vec<Font>,
-        sprites: Vec<Sprite>,
-        lang: LanguageData,
-    ) -> Self {
-        Self(camera_pos, screen_size, fonts, sprites, lang)
+    fn new(camera_pos: Vec2, screen_size: Offset2, fonts: Vec<Font>, sprites: Vec<Sprite>) -> Self {
+        Self(camera_pos, screen_size, fonts, sprites)
     }
     pub fn draw_sprite(&mut self, sprite: Sprite, scale: Offset2, pos: Vec2, rot: f32) {
         self.draw_sprite_screen(sprite, scale, (pos - self.0).into(), rot);
     }
-    fn draw_sprite_screen(&self, sprite: Sprite, scale: Offset2, top_left: Vec2, rot: f32) {
+    pub fn draw_sprite_screen(&self, sprite: Sprite, scale: Offset2, top_left: Vec2, rot: f32) {
         let sprite = sprite.scale(scale);
 
         let bottom_right = top_left + sprite.get_size();
@@ -1148,12 +1203,15 @@ impl DrawContext {
     pub fn draw_text(&mut self, text: &DisplayedText) {
         let mut pos = Offset2::ZERO;
         let font = &self.2[text.font.index];
-        for ch in self.4.strings[&text.contents].chars() {
+        for ch in text.contents.chars() {
             match ch {
                 '\r' => {}
                 '\n' => {
                     pos.x = 0.0;
                     pos.y += font.line_height as f32;
+                }
+                '\t' => {
+                    pos.x += (font.sprites[font.char_index_map[&' ']].1 * 4) as f32;
                 }
                 _ => {
                     let (sprite_r, x_off) = font.sprites[font.char_index_map[&ch]];

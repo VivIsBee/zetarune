@@ -20,6 +20,7 @@ use serde::{
 };
 
 use crate::{
+    components::dialogue::{DialogueItem, Dialoguer, Face, TyperSettings},
     ctx::*,
     rt::{EventTarget, InputState, InternalEvent, Key},
 };
@@ -395,6 +396,17 @@ pub enum StateData {
     LanguageRef(LanguageRef),
     Key(Key),
     Direction(Direction),
+    Face(Face),
+    TyperSettings(TyperSettings),
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SerializedTyperSettings<'a> {
+    pub font: &'a str,
+    pub speed: usize,
+    pub default_color: Color,
+    pub scale: Offset2,
+    pub voice: Option<&'a str>,
 }
 
 struct StateDataSeed<'a, 'b> {
@@ -444,6 +456,14 @@ impl Serialize for StateDataSeed<'_, '_> {
             Key(v) => tuple.serialize_field(v)?,
             Direction(v) => tuple.serialize_field(v)?,
             LanguageRef(v) => tuple.serialize_field(self.ctx.get_lang_id(*v))?,
+            Face(v) => tuple.serialize_field(v)?,
+            TyperSettings(v) => tuple.serialize_field(&SerializedTyperSettings {
+                font: self.ctx.get_font_id(v.font),
+                speed: v.speed,
+                default_color: v.default_color,
+                scale: v.scale,
+                voice: v.voice.map(|v| self.ctx.get_audio_id(v)),
+            })?,
         };
 
         tuple.end()
@@ -573,7 +593,7 @@ impl<'de> DeserializeSeed<'de> for StateDataSeed<'_, '_> {
                             .next_element()?
                             .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
                         let room_ref = self.ctx.get_lang_id_ref(&id).ok_or_else(|| {
-                            serde::de::Error::custom(format!("unknown room ID: {}", id))
+                            serde::de::Error::custom(format!("unknown language ID: {}", id))
                         })?;
                         Ok(StateData::LanguageRef(room_ref))
                     }
@@ -588,6 +608,33 @@ impl<'de> DeserializeSeed<'de> for StateDataSeed<'_, '_> {
                             .next_element()?
                             .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
                         Ok(StateData::Direction(v))
+                    }
+                    "Face" => {
+                        let v: Face = seq
+                            .next_element()?
+                            .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                        Ok(StateData::Face(v))
+                    }
+                    "SerializedTyperSettings" => {
+                        let v: SerializedTyperSettings = seq
+                            .next_element()?
+                            .ok_or_else(|| serde::de::Error::invalid_length(0, &self))?;
+                        Ok(StateData::TyperSettings(TyperSettings {
+                            font: self.ctx.get_font_id_ref(&v.font).ok_or_else(|| {
+                                serde::de::Error::custom(format!("unknown font ID: {}", v.font))
+                            })?,
+                            speed: v.speed,
+                            default_color: v.default_color,
+                            scale: v.scale,
+                            voice: v
+                                .voice
+                                .map(|v| {
+                                    self.ctx.get_audio_id_ref(&v).ok_or_else(|| {
+                                        serde::de::Error::custom(format!("unknown audio ID: {}", v))
+                                    })
+                                })
+                                .transpose()?,
+                        }))
                     }
                     _ => Err(serde::de::Error::unknown_variant(&var, StateData::VARIANTS)),
                 }
@@ -799,6 +846,8 @@ impl_statedata! {
     LanguageRef(LanguageRef),
     Key(Key),
     Direction(Direction),
+    Face(Face),
+    TyperSettings(TyperSettings),
 }
 
 impl<T> From<&Vec<T>> for StateData
@@ -908,6 +957,15 @@ pub enum ObjectStateKey {
     CurrentPlayerDir,
     /// 0 for player, player controller ignores, 1+ for subsequent
     PartyMemberI,
+    /// Whether the dialoguer is currently showing text
+    CurrentlyDialoguing,
+    CurrentFace,
+    CanSkip,
+    PauseFrames,
+    CurrentTyperSettings,
+    CurrentDialogueLoc,
+    DialogueColor,
+    WaitingForUser,
     Other(String),
 }
 
@@ -980,6 +1038,14 @@ impl_obj_state_key!(
     "_zc.ppm" => PlayerPartyMember,
     "_zc.cpd" => CurrentPlayerDir,
     "_zc.pmi" => PartyMemberI,
+    "_zc.dcd" => CurrentlyDialoguing,
+    "_zc.dcf" => CurrentFace,
+    "_zc.dcs" => CanSkip,
+    "_zc.dpf" => PauseFrames,
+    "_zc.cts" => CurrentTyperSettings,
+    "_zc.cdl" => CurrentDialogueLoc,
+    "_zc.ddc" => DialogueColor,
+    "_zc.wfu" => WaitingForUser,
 );
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -1088,6 +1154,16 @@ impl IntoIterator for ObjectState {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum DialogueItemOnScreen {
+    Text(DisplayedText),
+    Sprite {
+        sprite: SpriteRef,
+        location: Vec2,
+        scale: Offset2,
+    },
+}
+
 #[derive(derive_more::Debug)]
 pub struct World {
     pub current_room: RoomRef,
@@ -1109,12 +1185,18 @@ pub struct World {
     pub game_id: String,
     /// The current focus in the UI.
     pub ui_focus: Option<ObjectRef>,
-    /// History of positions and velocities of the player up to 240 frames ago (8 seconds)
+    /// History of positions and velocities of the player up to 240 frames ago
+    /// (8 seconds)
     pub primary_player_history: VecDeque<(Vec2, Offset2)>,
     pub player_still: bool,
     /// 0-3
     pub sprint_stage: u8,
     pub sprint_start: Instant,
+    /// None means the dialoguer hasn't been initalized
+    #[debug(skip)]
+    pub(crate) dialogue_queue: Option<VecDeque<DialogueItem>>,
+    #[debug(skip)]
+    pub(crate) current_shown_dialogue_stuff: Vec<DialogueItemOnScreen>,
     #[debug(skip)]
     pub(crate) text: HashSet<TextRef>,
     #[debug(skip)]
@@ -1164,6 +1246,8 @@ impl World {
             room_transition,
             lang,
             game_id,
+            dialogue_queue: None,
+            current_shown_dialogue_stuff: Vec::new(),
             primary_player_history: VecDeque::new(),
             player_still: true,
             sprint_stage: 0,
@@ -1176,6 +1260,30 @@ impl World {
             text: HashSet::new(),
             axis_loc: HashMap::new(),
         }
+    }
+    /// Pushes another piece of dialogue to show after all current dialogue.
+    /// Returns false if the dialoguer hasn't been initalized.
+    pub fn push_dialogue(&mut self, item: DialogueItem) -> bool {
+        if !self.dialoguer_initialized() {
+            return false;
+        }
+
+        self.dialogue_queue.as_mut().unwrap().push_back(item);
+        true
+    }
+    /// Clears the dialogue queue. Returns false if the dialoguer hasn't been
+    /// initalized.
+    pub fn clear_dialogue(&mut self) -> bool {
+        if !self.dialoguer_initialized() {
+            return false;
+        }
+
+        self.dialogue_queue.as_mut().unwrap().clear();
+        true
+    }
+    /// True if it has
+    pub fn dialoguer_initialized(&self) -> bool {
+        self.dialogue_queue.is_some()
     }
     pub fn axis_loc(&self, axis: gilrs::Axis) -> f32 {
         self.axis_loc.get(&axis).copied().unwrap_or(0.0)
@@ -1478,6 +1586,15 @@ event_enums!(
     /// Called at most 20 times a second; Default action will attempt to push it
     /// out to where it was at the previous frame before it started colliding.
     Event::Collide{..} => Collide {
+        objs: [ObjectRef; 2],
+    },
+    /// Called at most 20 times a second; Default action will attempt to push it
+    /// out to where it was at the previous frame before it started colliding.
+    ///
+    /// Only triggered for when it's the player colliding with something, and triggered
+    /// instead of the regular Collide event.
+    Event::PlayerCollide{..} => PlayerCollide {
+        player: ObjectRef,
         other: ObjectRef,
     },
     /// Called the full 30 times a second, after Tick when Tick is run. Duration is delta time,
@@ -1508,7 +1625,16 @@ event_enums!(
         from: RoomRef,
         to: RoomRef,
         entry: EntryRef,
-    }
+    },
+    Event::DialogueEvent { .. } => DialogueEvent {
+        /// Provided by the text
+        meta: usize,
+    },
+    Event::ChoiceTrigger { .. } => ChoiceTrigger {
+        choice_id: String,
+        choice: usize,
+        dialoguer: Dialoguer,
+    },
 );
 
 #[derive(Debug)]
@@ -1651,6 +1777,12 @@ impl Color {
         r: 0,
         g: 0,
         b: 0,
+        a: 255,
+    };
+    pub const WHITE: Color = Color {
+        r: 255,
+        g: 255,
+        b: 255,
         a: 255,
     };
     pub fn multiply_alpha(self, bg: Color) -> Color {
@@ -1834,7 +1966,7 @@ impl Audio {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Font {
     pub char_index_map: HashMap<char, usize>,
     /// u16 is the width of that character
@@ -1842,9 +1974,21 @@ pub struct Font {
     pub line_height: u16,
 }
 
+impl Font {
+    pub fn width(&self, text: &str) -> u32 {
+        let mut out = 0u32;
+        for ch in text.chars() {
+            out += self.sprites[self.char_index_map[&ch]].1 as u32;
+        }
+        out
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct DisplayedText {
-    pub contents: LocalTextRef,
+    /// Should be copied from the current language but isn't technically
+    /// required to be
+    pub contents: String,
     /// Screen-space, NOT world-space.
     pub loc: Vec2,
     /// Each character is rotated by this, not the entire text. Essentially poor
