@@ -3,5 +3,7 @@
     "rust-analyzer.linkedProjects": [
         "Cargo.toml",
         "zetarune-proc/Cargo.toml"
-    ]
+    ],
+    "rust-analyzer.cargo.allTargets": true,
+    // "rust-analyzer.cargo.target": "aarch64-nintendo-switch-freestanding"
 }

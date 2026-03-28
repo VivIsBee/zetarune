@@ -1,7 +1,5 @@
 use std::collections::VecDeque;
 
-use macroquad::window::screen_height;
-
 use crate::{
     components::battles::BattleAction,
     ctx::{ActionRef, AudioRef, FontRef, LocalTextRef, ObjectRef, SpriteRef},
@@ -9,6 +7,7 @@ use crate::{
         Callbacks, Color, DialogueItemOnScreen, DisplayedText, Object, ObjectState, Offset2, Vec2,
         World,
     },
+    rt::KeyCode,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -95,9 +94,9 @@ impl Dialoguer {
 
         world.add_mapping(
             interact,
-            crate::rt::Key::Keyboard(macroquad::input::KeyCode::Z),
+            crate::rt::Key::Keyboard(KeyCode::Z),
         );
-        world.add_mapping(skip, crate::rt::Key::Keyboard(macroquad::input::KeyCode::X));
+        world.add_mapping(skip, crate::rt::Key::Keyboard(KeyCode::X));
 
         let mut obj = Object {
             collider: vec![],
@@ -226,7 +225,7 @@ impl Dialoguer {
                                 let mut dialogue_loc = obj
                                     .state
                                     .get(crate::objs::ObjectStateKey::CurrentDialogueLoc)
-                                    .unwrap_or(Vec2 { x: 5.0, y: (screen_height() / 6.0) * 5.0 });
+                                    .unwrap_or(Vec2 { x: 5.0, y: (world.screen_height() / 6.0) * 5.0 });
                                 let typer = obj
                                     .state
                                     .get::<TyperSettings>(

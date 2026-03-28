@@ -1,15 +1,30 @@
 //! Data model
 
-use std::{
+use core::matches;
+use core::{
     cmp::Ordering,
-    collections::{self, HashMap, HashSet, VecDeque},
-    fmt::{self, Debug, Display},
     hash::Hash,
     num::NonZeroU8,
     ops::{Index, IndexMut},
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Duration,
 };
+
+use alloc::{
+    collections::VecDeque,
+    fmt::{self, Debug, Display},
+    sync::Arc,
+    vec::Vec,
+};
+
+#[cfg(target_os = "horizon")]
+use nx::sync::Mutex;
+#[cfg(target_os = "horizon")]
+use crate::switch_impl::Instant;
+
+use hashbrown::{HashMap, HashSet, hash_map};
+
+#[cfg(not(target_os = "horizon"))]
+use std::{sync::Mutex, time::Instant};
 
 use gilrs::Axis;
 use rodio::{Source, SpatialPlayer};
@@ -1147,7 +1162,7 @@ impl ObjectState {
 }
 
 impl IntoIterator for ObjectState {
-    type IntoIter = collections::hash_map::IntoIter<ObjectStateKey, StateData>;
+    type IntoIter = hash_map::IntoIter<ObjectStateKey, StateData>;
     type Item = (ObjectStateKey, StateData);
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
@@ -1164,7 +1179,6 @@ pub enum DialogueItemOnScreen {
     },
 }
 
-#[derive(derive_more::Debug)]
 pub struct World {
     pub current_room: RoomRef,
     pub ctx: Ctx,
@@ -1193,25 +1207,33 @@ pub struct World {
     pub sprint_stage: u8,
     pub sprint_start: Instant,
     /// None means the dialoguer hasn't been initalized
-    #[debug(skip)]
     pub(crate) dialogue_queue: Option<VecDeque<DialogueItem>>,
-    #[debug(skip)]
     pub(crate) current_shown_dialogue_stuff: Vec<DialogueItemOnScreen>,
-    #[debug(skip)]
     pub(crate) text: HashSet<TextRef>,
-    #[debug(skip)]
     pub(crate) event_queue: Vec<(EventTarget, Box<dyn FnMut() -> Event>)>,
-    #[debug(skip)]
     pub(crate) internal_event_queue: Vec<InternalEvent>,
-    #[debug(skip)]
     pub(crate) current_frame_presses: HashMap<ActionRef, InputState>,
-    #[debug(skip)]
     pub(crate) audio_handle: rodio::MixerDeviceSink,
-    #[debug(skip)]
     pub(crate) axis_loc: HashMap<gilrs::Axis, f32>,
 }
 
 impl World {
+    #[cfg(not(target_os = "horizon"))]
+    pub fn screen_height(&self) -> f32 {
+        macroquad::window::screen_height() as f32
+    }
+    #[cfg(target_os = "horizon")]
+    pub fn screen_height(&self) -> f32 {
+        nx::gpu::SCREEN_HEIGHT as f32
+    }
+    #[cfg(not(target_os = "horizon"))]
+    pub fn screen_width(&self) -> f32 {
+        macroquad::window::screen_width() as f32
+    }
+    #[cfg(target_os = "horizon")]
+    pub fn screen_width(&self) -> f32 {
+        nx::gpu::SCREEN_WIDTH as f32
+    }
     pub fn is_dark_world(&self) -> bool {
         !self.is_light_world()
     }
@@ -1436,10 +1458,10 @@ impl World {
     }
     pub fn add_mapping(&mut self, action: ActionRef, key: Key) {
         match self.input_mappings.entry(key) {
-            collections::hash_map::Entry::Occupied(mut v) => {
+            hash_map::Entry::Occupied(mut v) => {
                 v.get_mut().insert(action);
             }
-            collections::hash_map::Entry::Vacant(v) => {
+            hash_map::Entry::Vacant(v) => {
                 let mut set = HashSet::new();
                 set.insert(action);
                 v.insert(set);
@@ -1540,13 +1562,11 @@ macro_rules! event_enums {
         pub enum EventName {
             $($(#[$meta])* $variant),*
         }
-        #[derive(derive_more::Debug)]
         pub enum Event {
             $($(#[$meta])* $variant $(( $($(#[$meta3])* $t2),* ))? $({ $( $(#[$meta2])* $name: $t ),* })?),*
         }
         paste::paste! {
             $(
-                #[derive(derive_more::Debug)]
                 $(#[$meta])*
                 pub struct [< Event $variant >] $(( $($(#[$meta3])* pub $t2),* );)? $({ $( $(#[$meta2])* pub $name: $t ),* })? $( $($semicolon)? ; )?
             )*
@@ -1601,7 +1621,7 @@ event_enums!(
     /// DisableDefault disables rendering the current sprite/animation like usual.
     Event::Render(..) => Render(
         v0 Duration,
-        #[debug(skip)] v1 Arc<Mutex<crate::rt::DrawContext>>,
+        v1 Arc<Mutex<crate::rt::DrawContext>>,
     ),
     /// DisableDefault has no effect. Called after all resources are loaded and
     /// initalized, but before this is presented to the player on-screen.
@@ -1637,7 +1657,6 @@ event_enums!(
     },
 );
 
-#[derive(Debug)]
 pub struct EventArgs<'a> {
     pub room: Option<RoomRef>,
     pub obj: Option<ObjectRef>,
@@ -1676,7 +1695,7 @@ impl Callbacks {
     }
     #[must_use]
     pub(crate) fn trigger(&self, event: Event, args: EventArgs) -> Option<EventResult> {
-        self.0.get(&(&event).into()).map(|v| v(event, args))
+        self.0.get::<EventName>(&(&event).into()).map(|v| v(event, args))
     }
 }
 

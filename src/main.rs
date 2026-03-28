@@ -1,13 +1,20 @@
+#![no_std]
 //! Test game for zetarune
 
-use std::collections::{HashMap, HashSet};
+extern crate alloc;
 
 use zetarune::{
-    components::{dialogue::{DialogueItem, Dialoguer, TextItem}, world_npc::{self, WorldCharacterBuilder}},
+    HashMap, HashSet,
+    components::{
+        dialogue::{DialogueItem, Dialoguer, TextItem},
+        world_npc::{self, WorldCharacterBuilder},
+    },
     ctx::{Ctx, ObjectRef, RoomRef},
     objs::{LanguageData, ObjectState, Room, World},
     resources::{self, Provider},
 };
+
+use alloc::{vec, string::ToString};
 
 fn main() {
     let mut ctx = Ctx::new();
@@ -38,12 +45,13 @@ fn main() {
         strings: HashMap::new(),
     };
 
-    lang.strings.insert(text, "HelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHello".to_string());
-
-    let lang = ctx.add_lang(
-        "en-US".to_string(),
-        lang,
+    lang.strings.insert(
+        text,
+        "HelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHelloHello"
+            .to_string(),
     );
+
+    let lang = ctx.add_lang("en-US".to_string(), lang);
 
     let placeholder_room = RoomRef::default(&mut ctx);
     let placeholder_camera = ObjectRef::default(&mut ctx);
@@ -120,7 +128,7 @@ fn main() {
 
     world.push_dialogue(DialogueItem {
         text: vec![TextItem::Text(text)].into(),
-        small_extra: None
+        small_extra: None,
     });
 
     let mut provider = resources::GamemakerDataProvider::new(

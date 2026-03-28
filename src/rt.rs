@@ -1,21 +1,27 @@
 //! The actual runtime that plays a game.
 
-use std::{
-    collections::HashSet,
-    fmt::Debug,
-    mem::ManuallyDrop,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
-};
+use core::{fmt::Debug, mem::ManuallyDrop, time::Duration};
 
+#[cfg(target_os = "horizon")]
+use nx::sync::Mutex;
+#[cfg(not(target_os = "horizon"))]
+use std::{path::PathBuf, sync::Mutex, time::Instant};
+
+#[cfg(target_os = "horizon")]
+use crate::switch_impl::Instant;
+
+use alloc::sync::Arc;
+
+#[cfg(not(target_os = "horizon"))]
 use macroquad::{
     color::WHITE,
     conf::Conf,
-    input::{self, KeyCode},
+    input,
     texture::{DrawTextureParams, Image, Texture2D, draw_texture_ex},
     window::{next_frame, screen_height, screen_width},
 };
+
+use hashbrown::HashSet;
 
 use crate::{
     ctx::{AudioRef, EntryRef, ObjectRef, RoomRef},
@@ -27,26 +33,70 @@ use crate::{
     warn,
 };
 
-macro_rules! impl_from_u16 {
-    ($vis:vis enum $enum:ty { $( $(#[$meta:meta])* $variant:ident = $val:literal),+ $(,)? }) => {
-        impl FromU16 for $enum {
+fn key_code_serialize<S>(code: &KeyCode, s: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    s.serialize_u16((*code) as u16)
+}
+
+fn key_code_deserialize<'de, D>(d: D) -> Result<KeyCode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    struct KeyCodeVisitor;
+    impl<'de> serde::de::Visitor<'de> for KeyCodeVisitor {
+        type Value = KeyCode;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a macroquad keycode")
+        }
+        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(KeyCode::from_u16(v as u16).unwrap_or(KeyCode::Unknown))
+        }
+    }
+    d.deserialize_u16(KeyCodeVisitor)
+}
+
+macro_rules! enum_make_of_foreign {
+    (enum $enum_name:ident => $(#[$meta2:meta])* $foreign:ty { $( $(#[$meta:meta])* $name:ident$( = $val:literal)?),* $(,)?}) => {
+        #[derive(Debug, Copy, Clone, PartialEq, Hash, Eq, serde::Serialize, serde::Deserialize)]
+        #[repr(u16)]
+        /// Based off of miniquad's type.
+        pub enum $enum_name {
+            $($(#[$meta])* $name$( = $val)?),*
+        }
+        impl $enum_name {
             fn from_u16(value: u16) -> Option<Self> {
                 match value {
-                    $($val => Some(<$enum>::$variant),)+
+                    $($($val => Some(<$enum_name>::$name),)?)*
                     _ => None,
+                }
+            }
+        }
+        $(#[$meta2])*
+        impl From<$enum_name> for $foreign {
+            fn from(val: $enum_name) -> Self {
+                match val {
+                    $(<$enum_name>::$name => <$foreign>::$name),*
+                }
+            }
+        }
+        $(#[$meta2])*
+        impl From<$foreign> for $enum_name {
+            fn from(val: $foreign) -> Self {
+                match val {
+                    $(<$foreign>::$name => <$enum_name>::$name),*
                 }
             }
         }
     };
 }
 
-trait FromU16: Sized {
-    fn from_u16(value: u16) -> Option<Self>;
-}
-
-// Usage:
-impl_from_u16! {
-    pub enum KeyCode {
+enum_make_of_foreign! {
+    enum KeyCode => #[cfg(not(target_os = "horizon"))] macroquad::input::KeyCode {
         Space = 0x0020,
         Apostrophe = 0x0027,
         Comma = 0x002c,
@@ -172,32 +222,34 @@ impl_from_u16! {
         Unknown = 0x01ff,
     }
 }
-
-fn key_code_serialize<S>(code: &KeyCode, s: S) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    s.serialize_u16((*code) as u16)
-}
-
-fn key_code_deserialize<'de, D>(d: D) -> Result<KeyCode, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    struct KeyCodeVisitor;
-    impl<'de> serde::de::Visitor<'de> for KeyCodeVisitor {
-        type Value = KeyCode;
-        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("a macroquad keycode")
-        }
-        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error,
-        {
-            Ok(KeyCode::from_u16(v as u16).unwrap_or(KeyCode::Unknown))
-        }
+enum_make_of_foreign! {
+    enum GamepadButton => #[cfg(not(target_os = "horizon"))] gilrs::Button {
+        // Action Pad
+        South = 1,
+        East = 2,
+        North = 4,
+        West = 5,
+        C = 3,
+        Z = 6,
+        // Triggers
+        LeftTrigger = 7,
+        LeftTrigger2 = 9,
+        RightTrigger = 8,
+        RightTrigger2 = 10,
+        // Menu Pad
+        Select = 11,
+        Start = 12,
+        Mode = 13,
+        // Sticks
+        LeftThumb = 14,
+        RightThumb = 15,
+        // D-Pad
+        DPadUp = 16,
+        DPadDown = 17,
+        DPadLeft = 18,
+        DPadRight = 19,
+        Unknown = 0,
     }
-    d.deserialize_u16(KeyCodeVisitor)
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -207,9 +259,9 @@ pub enum Key {
             serialize_with = "key_code_serialize",
             deserialize_with = "key_code_deserialize"
         )]
-        macroquad::input::KeyCode,
+        KeyCode,
     ),
-    Gamepad(gilrs::Button),
+    Gamepad(GamepadButton),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -221,7 +273,8 @@ pub enum InputState {
     Released,
 }
 
-pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
+#[cfg(not(target_os = "horizon"))]
+fn main_impl(window_title: impl ToString, resizable: bool, world: World) -> ! {
     macroquad::Window::from_config(
         Conf {
             miniquad_conf: macroquad::window::Conf {
@@ -249,7 +302,7 @@ pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
                     world.post_event(
                         EventTarget::All,
                         Box::new(move || Event::KeyPress {
-                            key: Key::Keyboard(key),
+                            key: Key::Keyboard(key.into()),
                         }) as Box<_>,
                     );
                 }
@@ -257,7 +310,7 @@ pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
                     world.post_event(
                         EventTarget::All,
                         Box::new(move || Event::KeyRelease {
-                            key: Key::Keyboard(key),
+                            key: Key::Keyboard(key.into()),
                         }) as Box<_>,
                     );
                 }
@@ -268,7 +321,7 @@ pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
                     world.post_event(
                         EventTarget::All,
                         Box::new(move || Event::KeyHold {
-                            key: Key::Keyboard(key),
+                            key: Key::Keyboard(key.into()),
                         }) as Box<_>,
                     );
                 }
@@ -278,11 +331,11 @@ pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
                 for (key, actions) in &world.input_mappings {
                     let input_state = match key {
                         Key::Keyboard(key) => {
-                            if input::is_key_pressed(*key) {
+                            if input::is_key_pressed((*key).into()) {
                                 InputState::NewlyPressed
-                            } else if input::is_key_down(*key) {
+                            } else if input::is_key_down((*key).into()) {
                                 InputState::Pressed
-                            } else if input::is_key_released(*key) {
+                            } else if input::is_key_released((*key).into()) {
                                 InputState::NewlyReleased
                             } else {
                                 InputState::Released
@@ -291,9 +344,9 @@ pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
                         Key::Gamepad(btn) => {
                             let mut state = InputState::Released;
                             for (_, gamepad) in gilrs.gamepads() {
-                                if gamepad.button_data(*btn).unwrap().is_repeating() {
+                                if gamepad.button_data((*btn).into()).unwrap().is_repeating() {
                                     state = InputState::Pressed;
-                                } else if gamepad.is_pressed(*btn) {
+                                } else if gamepad.is_pressed((*btn).into()) {
                                     state = InputState::NewlyPressed;
                                 }
                             }
@@ -336,8 +389,7 @@ pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
                     &mut timer,
                     Instant::now().duration_since(last_start_t),
                     &mut world,
-                )
-                .await;
+                );
 
                 next_frame().await;
 
@@ -352,7 +404,14 @@ pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
             }
         })(),
     );
-    std::process::exit(0);
+    panic!("somehow the event loop stopped")
+}
+
+#[cfg(target_os = "horizon")]
+use crate::switch_impl::main as main_impl;
+
+pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
+    main_impl(window_title, resizable, world)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -456,7 +515,14 @@ pub fn get_save_path(world: &World, i: u16) -> PathBuf {
     data_path.join(&format!("save-{i:05}.zrsav"))
 }
 
-async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
+pub(crate) fn frame(
+    timer: &mut Duration,
+    delta: Duration,
+    world: &mut World,
+    #[cfg(target_os = "horizon")] surface: &mut nx::gpu::canvas::CanvasManager<
+        nx::gpu::canvas::RGBA8,
+    >,
+) {
     let screen_size = Offset2 {
         x: screen_width(),
         y: screen_height(),
@@ -1156,8 +1222,10 @@ async fn frame(timer: &mut Duration, delta: Duration, world: &mut World) {
 /// please don't :c
 ///
 /// Everything is in world coordinates, except for specific scenarios like text.
+#[cfg(not(target_os = "horizon"))]
 pub struct DrawContext(Vec2, Offset2, Vec<Font>, Vec<Sprite>);
 
+#[cfg(not(target_os = "horizon"))]
 impl DrawContext {
     fn new(camera_pos: Vec2, screen_size: Offset2, fonts: Vec<Font>, sprites: Vec<Sprite>) -> Self {
         Self(camera_pos, screen_size, fonts, sprites)
@@ -1224,3 +1292,6 @@ impl DrawContext {
         }
     }
 }
+
+#[cfg(target_os = "horizon")]
+pub use crate::switch_impl::DrawContext;

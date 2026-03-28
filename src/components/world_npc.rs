@@ -1,13 +1,20 @@
-use std::{
-    collections::{HashMap, HashSet},
+use core::{
     fmt::Display,
     num::NonZeroU8,
     ops::Deref,
     sync::atomic::AtomicUsize,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
-use macroquad::input::KeyCode;
+use hashbrown::{HashMap, HashSet};
+
+#[cfg(not(target_os = "horizon"))]
+use std::time::Instant;
+
+#[cfg(target_os = "horizon")]
+use crate::switch_impl::Instant;
+
+use alloc::vec::Vec;
 
 use crate::{
     ctx::{ActionRef, AniSheetRef, Ctx, ObjectRef},
@@ -15,7 +22,7 @@ use crate::{
         AniEvent, AniSheet, Animation, Callbacks, Collider, Direction, Object, ObjectState,
         ObjectStateKey, Offset2, StateData, Vec2, World,
     },
-    rt::Key,
+    rt::{Key, KeyCode},
 };
 
 #[derive(Clone, Debug, PartialEq)]

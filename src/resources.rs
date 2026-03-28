@@ -7,12 +7,17 @@ use crate::{
     ctx::Ctx,
     objs::{self, Audio, Color, Font, Offset2, Sprite, Vec2},
 };
-use std::{
-    collections::{HashMap, HashSet},
+use core::{
     convert::Infallible,
     error::Error,
-    io::Cursor,
     mem::ManuallyDrop,
+};
+
+use hashbrown::{HashMap, HashSet};
+
+#[cfg(not(target_os = "horizon"))]
+use std::{
+    io::Cursor,
     path::PathBuf,
 };
 
@@ -169,6 +174,7 @@ impl Provider for SpriteSheetProvider {
     }
 }
 
+#[cfg(not(target_os = "horizon"))]
 pub struct GamemakerDataProvider {
     opts: ParsingOptions,
     data: Option<libgm::wad::GMData>,
@@ -177,6 +183,7 @@ pub struct GamemakerDataProvider {
     audio_to_load: HashSet<String>,
 }
 
+#[cfg(not(target_os = "horizon"))]
 impl GamemakerDataProvider {
     pub const fn new(
         source_game: &'static str,
@@ -197,7 +204,7 @@ impl GamemakerDataProvider {
     ) -> Sprite {
         let tex = page_item
             .texture_page
-            .resolve(&self.data.as_ref().unwrap().embedded_textures.texture_pages)
+            .resolve(&self.data.as_ref().unwrap().texture_pages.texture_pages)
             .unwrap();
         let mut image = (*tex.image.as_ref().unwrap().to_dynamic_image().unwrap()).clone();
         image = image.crop_imm(
@@ -306,7 +313,7 @@ impl Provider for GamemakerDataProvider {
 
                 audio.audio_data.clone()
             } else {
-                let path = data.location.as_ref().unwrap().clone().join(&sound.file);
+                let path = data.meta.location.as_ref().unwrap().clone().join(&sound.file);
 
                 std::fs::read(path).unwrap()
             });
