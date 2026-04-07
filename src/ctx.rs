@@ -206,6 +206,18 @@ macro_rules! define_ctx {
                             index: (*self.[< $prop _id_map >].get(&id).unwrap())
                         }
                     }
+
+                    #[track_caller]
+                    pub fn [< fill_placeholder_ $prop >] (&mut self, rref: $name $($(, $prop2: ctx_get_borrowed_or_owned!(owned $unwrapped_t2 $(: $owned_t2)? $(: $default)?))*)?) {
+                        let i = rref.index;
+                        self.[< $prop _placeholder >][i] = false;
+                        $(
+                            $(
+                                self.[< $prop2 s >][i] = Some($prop2);
+                            )*
+                        )?
+                    }
+
                     #[doc = concat!("Add a new `", stringify!($prop),
                         "` or find an already existing one with the same value
                         and return a [`", stringify!($name), "`] reference to it. ID CANNOT contain a `.`, or the function will panic.")]

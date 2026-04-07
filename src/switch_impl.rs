@@ -17,7 +17,7 @@ use nx::{
     util,
 };
 
-use crate::{objs::World, rt};
+use crate::{objs::World, rt, log, trace};
 
 #[inline(always)]
 extern "C" fn get_system_tick() -> u64 {
@@ -155,10 +155,8 @@ impl DrawContext {
     }
 }
 
-pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
-    let mut world = world;
-
-    diag_log!(log::lm::LmLogger { log::LogSeverity::Trace, false } => "Starting {window_title} (made with Zetarune)...");
+pub fn main(window_title: impl ToString, resizable: bool, mut world: World) -> ! {
+    log!(crate::log::Level::Info: false, "On switch. Using nx.");
 
     let supported_style_tags = NpadStyleTag::Handheld()
         | NpadStyleTag::FullKey()
@@ -186,14 +184,12 @@ pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
     )
     .unwrap();
 
-    diag_log!(log::lm::LmLogger { log::LogSeverity::Trace, false } => "Done initalizing.");
+    trace!("Done initalizing nx backend.");
 
     let mut timer = Duration::ZERO;
 
     loop {
         rt::frame(&mut timer, delta, &mut world, &mut surface);
-
-        diag_log!(log::lm::LmLogger { log::LogSeverity::Trace, true } => "frame complete");
 
         surface.wait_vsync_event(None).unwrap();
         // Sleep 10ms (aka 10'000'000 ns)

@@ -1,12 +1,18 @@
 //! The actual runtime that plays a game.
 
-use core::{fmt::Debug, mem::ManuallyDrop, time::Duration};
+use core::{
+    fmt::{Debug, Display},
+    mem::ManuallyDrop,
+    time::Duration,
+};
 
 #[cfg(target_os = "horizon")]
 use nx::sync::Mutex;
 #[cfg(not(target_os = "horizon"))]
 use std::{path::PathBuf, sync::Mutex, time::Instant};
 
+#[cfg(not(target_os = "horizon"))]
+use crate::log;
 #[cfg(target_os = "horizon")]
 use crate::switch_impl::Instant;
 
@@ -27,8 +33,8 @@ use crate::{
     ctx::{AudioRef, EntryRef, ObjectRef, RoomRef},
     error,
     objs::{
-        AniEvent, DisplayedText, Event, EventArgs, EventResult, Font, ObjectStateKey, Offset2,
-        Sprite, Vec2, World,
+        AniEvent, DisplayedText, Event, EventArgs, EventResult, Font, ObjectColliderType,
+        ObjectStateKey, Offset2, Sprite, Vec2, World,
     },
     warn,
 };
@@ -69,6 +75,7 @@ macro_rules! enum_make_of_foreign {
             $($(#[$meta])* $name$( = $val)?),*
         }
         impl $enum_name {
+            #[allow(dead_code)]
             fn from_u16(value: u16) -> Option<Self> {
                 match value {
                     $($($val => Some(<$enum_name>::$name),)?)*
@@ -275,6 +282,7 @@ pub enum InputState {
 
 #[cfg(not(target_os = "horizon"))]
 fn main_impl(window_title: impl ToString, resizable: bool, world: World) -> ! {
+    log!(crate::log::Level::Info: false, "On standard platform. Using macroquad and gilrs.");
     macroquad::Window::from_config(
         Conf {
             miniquad_conf: macroquad::window::Conf {
@@ -404,13 +412,15 @@ fn main_impl(window_title: impl ToString, resizable: bool, world: World) -> ! {
             }
         })(),
     );
-    panic!("somehow the event loop stopped")
+    std::process::exit(0);
 }
 
 #[cfg(target_os = "horizon")]
 use crate::switch_impl::main as main_impl;
 
-pub fn main(window_title: impl ToString, resizable: bool, world: World) -> ! {
+pub fn main(window_title: impl Display, resizable: bool, world: World) -> ! {
+    log!(crate::log::Level::Info: false, "Starting {window_title} (made with Zetavoxel)...");
+
     main_impl(window_title, resizable, world)
 }
 
@@ -445,36 +455,28 @@ fn send_event_all<'a, F: FnMut() -> Event + 'a>(
     mut object_callback: impl FnMut(&mut World, Option<EventResult>, ObjectRef),
 ) {
     if world.state.get(key.clone()).unwrap_or(true) {
-        if let Some(callbacks) = world.callbacks.clone() {
-            let res = callbacks.trigger(
-                event_producer(),
-                EventArgs {
-                    room: None,
-                    obj: None,
-                    world: world,
-                },
-            );
-            world_callback(world, res);
-        } else {
-            world_callback(world, None);
-        }
+        let res = world.callbacks.clone().trigger(
+            event_producer(),
+            EventArgs {
+                room: None,
+                obj: None,
+                world: world,
+            },
+        );
+        world_callback(world, res);
     }
 
     let room = world.ctx.get_room(world.current_room);
     if room.state.get(key.clone()).unwrap_or(true) {
-        if let Some(callbacks) = room.callbacks.clone() {
-            let res = callbacks.trigger(
-                event_producer(),
-                EventArgs {
-                    room: Some(world.current_room),
-                    obj: None,
-                    world: world,
-                },
-            );
-            room_callback(world, res, world.current_room);
-        } else {
-            room_callback(world, None, world.current_room);
-        }
+        let res = room.callbacks.clone().trigger(
+            event_producer(),
+            EventArgs {
+                room: Some(world.current_room),
+                obj: None,
+                world: world,
+            },
+        );
+        room_callback(world, res, world.current_room);
     }
 
     for (obj_r, room) in objs {
@@ -484,19 +486,15 @@ fn send_event_all<'a, F: FnMut() -> Event + 'a>(
         let obj = world.ctx.get_object(*obj_r);
 
         if obj.state.get(key.clone()).unwrap_or(true) {
-            if let Some(callbacks) = obj.callbacks.clone() {
-                let res = callbacks.trigger(
-                    event_producer(),
-                    EventArgs {
-                        room: *room,
-                        obj: Some(*obj_r),
-                        world: world,
-                    },
-                );
-                object_callback(world, res, *obj_r);
-            } else {
-                object_callback(world, None, *obj_r);
-            }
+            let res = obj.callbacks.clone().trigger(
+                event_producer(),
+                EventArgs {
+                    room: *room,
+                    obj: Some(*obj_r),
+                    world: world,
+                },
+            );
+            object_callback(world, res, *obj_r);
         }
     }
 }
@@ -611,6 +609,11 @@ pub(crate) fn frame(
                         .get_mut_object(oref)
                         .state
                         .set(ObjectStateKey::Pos, entry_loc);
+                    
+                    world.event_queue.push((
+                        EventTarget::Object(oref, Some(world.current_room)),
+                        Box::new(|| Event::PlayerEnter),
+                    ));
                 }
 
                 for oref in &world.ctx.get_room(world.current_room).objects {
@@ -680,16 +683,23 @@ pub(crate) fn frame(
 
     let mut collided = HashSet::new(); // needed to prevent double-reporting each collision
     for (obj1, room1) in &objs {
-        let obj1_colliders = &world.ctx.get_object(*obj1).collider;
-        let obj1_pos = if let Some(pos) = world.ctx.get_object(*obj1).get_position() {
-            pos
-        } else {
-            continue;
-        };
+        let obj1_deref = world.ctx.get_object(*obj1);
+
+        // if obj1_deref.collider_type == ObjectColliderType::Area {
+        //     continue;
+        // }
+
+        let obj1_colliders = &obj1_deref.collider;
 
         if obj1_colliders.is_empty() {
             continue;
         }
+
+        let obj1_pos = if let Some(pos) = obj1_deref.get_position() {
+            pos
+        } else {
+            continue;
+        };
 
         for (obj2, room2) in &objs {
             let mut objs = [*obj1, *obj2];
@@ -698,16 +708,23 @@ pub(crate) fn frame(
                 continue;
             }
 
-            let obj2_colliders = &world.ctx.get_object(*obj2).collider;
-            let obj2_pos = if let Some(pos) = world.ctx.get_object(*obj2).get_position() {
-                pos
-            } else {
-                continue;
-            };
+            let obj2_deref = world.ctx.get_object(*obj2);
+
+            // if obj2_deref.collider_type == ObjectColliderType::Area {
+            //     continue;
+            // }
+
+            let obj2_colliders = &obj2_deref.collider;
 
             if obj2_colliders.is_empty() {
                 continue;
             }
+
+            let obj2_pos = if let Some(pos) = obj2_deref.get_position() {
+                pos
+            } else {
+                continue;
+            };
 
             'collider_loop1: for collider1 in obj1_colliders {
                 for collider2 in obj2_colliders {
@@ -715,9 +732,14 @@ pub(crate) fn frame(
                         let obj1 = *obj1;
                         let obj2 = *obj2;
 
+                        world.event_queue.push((
+                            EventTarget::DuoObject([(obj1, *room1), (obj2, *room2)]),
+                            Box::new(move || Event::Collide { objs: [obj1, obj2] }),
+                        ));
+
                         if world.player.contains(&obj1) {
                             world.event_queue.push((
-                                EventTarget::DuoObject([(obj1, *room1), (obj2, *room2)]),
+                                EventTarget::Object(obj2, *room2),
                                 Box::new(move || Event::PlayerCollide {
                                     player: obj1,
                                     other: obj2,
@@ -725,18 +747,14 @@ pub(crate) fn frame(
                             ));
                         } else if world.player.contains(&obj2) {
                             world.event_queue.push((
-                                EventTarget::DuoObject([(obj1, *room1), (obj2, *room2)]),
+                                EventTarget::Object(obj1, *room1),
                                 Box::new(move || Event::PlayerCollide {
                                     player: obj2,
                                     other: obj1,
                                 }),
                             ));
-                        } else {
-                            world.event_queue.push((
-                                EventTarget::DuoObject([(obj1, *room1), (obj2, *room2)]),
-                                Box::new(move || Event::Collide { objs: [obj1, obj2] }),
-                            ));
                         }
+
                         collided.insert(objs);
 
                         break 'collider_loop1;
@@ -765,18 +783,14 @@ pub(crate) fn frame(
 
                 let is_ani_continue = matches!(ev, Event::AniContinueEvent);
 
-                let res = if let Some(callbacks) = world.ctx.get_object(obj_r).callbacks.clone() {
-                    callbacks.trigger(
-                        ev,
-                        EventArgs {
-                            room: room,
-                            obj: Some(obj_r),
-                            world,
-                        },
-                    )
-                } else {
-                    None
-                };
+                let res = world.ctx.get_object(obj_r).callbacks.clone().trigger(
+                    ev,
+                    EventArgs {
+                        room: room,
+                        obj: Some(obj_r),
+                        world,
+                    },
+                );
 
                 if is_ani_continue && res != Some(EventResult::DisableDefault) {
                     let obj = world.ctx.get_object(obj_r);
@@ -800,28 +814,24 @@ pub(crate) fn frame(
                 }
             }
             EventTarget::Room(room) => {
-                if let Some(callbacks) = world.ctx.get_room(room).callbacks.clone() {
-                    let _ = callbacks.trigger(
-                        event(),
-                        EventArgs {
-                            room: Some(room),
-                            obj: None,
-                            world,
-                        },
-                    );
-                }
+                let _ = world.ctx.get_room(room).callbacks.clone().trigger(
+                    event(),
+                    EventArgs {
+                        room: Some(room),
+                        obj: None,
+                        world,
+                    },
+                );
             }
             EventTarget::World => {
-                if let Some(callbacks) = world.callbacks.clone() {
-                    let _ = callbacks.trigger(
-                        event(),
-                        EventArgs {
-                            room: None,
-                            obj: None,
-                            world,
-                        },
-                    );
-                }
+                let _ = world.callbacks.clone().trigger(
+                    event(),
+                    EventArgs {
+                        room: None,
+                        obj: None,
+                        world,
+                    },
+                );
             }
             EventTarget::All => {
                 send_event_all(
@@ -846,45 +856,31 @@ pub(crate) fn frame(
                     }
                 );
 
-                let res1 =
-                    if let Some(callbacks) = world.ctx.get_object(objs[0].0).callbacks.clone() {
-                        callbacks.trigger(
-                            ev,
-                            EventArgs {
-                                room: objs[0].1,
-                                obj: Some(objs[0].0),
-                                world,
-                            },
-                        )
-                    } else {
-                        None
-                    };
+                let res1 = world.ctx.get_object(objs[0].0).callbacks.clone().trigger(
+                    ev,
+                    EventArgs {
+                        room: objs[0].1,
+                        obj: Some(objs[0].0),
+                        world,
+                    },
+                );
 
                 let ev = event();
-                let res2 =
-                    if let Some(callbacks) = world.ctx.get_object(objs[1].0).callbacks.clone() {
-                        callbacks.trigger(
-                            ev,
-                            EventArgs {
-                                room: objs[1].1,
-                                obj: Some(objs[1].0),
-                                world,
-                            },
-                        )
-                    } else {
-                        None
-                    };
+                let res2 = world.ctx.get_object(objs[1].0).callbacks.clone().trigger(
+                    ev,
+                    EventArgs {
+                        room: objs[1].1,
+                        obj: Some(objs[1].0),
+                        world,
+                    },
+                );
 
                 if (is_collision || is_player_collision)
                     && res1 != Some(EventResult::DisableDefault)
                     && res2 != Some(EventResult::DisableDefault)
                 {
-                    let obj_static_body = world.ctx.get_object(objs[0].0).static_body;
-                    let other_static_body = world.ctx.get_object(objs[1].0).static_body;
-
-                    if (!obj_static_body) && (!other_static_body) {
-                        // both static, ignore
-                    }
+                    let obj_collider_type = world.ctx.get_object(objs[0].0).collider_type;
+                    let other_collider_type = world.ctx.get_object(objs[1].0).collider_type;
 
                     let pos1 = if let Some(pos) = world.ctx.get_object(objs[0].0).get_position() {
                         pos
@@ -922,7 +918,12 @@ pub(crate) fn frame(
                     }
                     let offset = offset.unwrap();
 
-                    if (!obj_static_body) && (!other_static_body) {
+                    if obj_collider_type == ObjectColliderType::Area
+                        || other_collider_type == ObjectColliderType::Area
+                    {
+                    } else if obj_collider_type == ObjectColliderType::Dynamic
+                        && other_collider_type == ObjectColliderType::Dynamic
+                    {
                         world
                             .ctx
                             .get_mut_object(objs[0].0)
@@ -933,20 +934,24 @@ pub(crate) fn frame(
                             .get_mut_object(objs[1].0)
                             .state
                             .set(ObjectStateKey::Pos, pos2 + (offset / 2.0));
-                    } else if obj_static_body && (!other_static_body) {
+                    } else if obj_collider_type == ObjectColliderType::Static
+                        && other_collider_type == ObjectColliderType::Dynamic
+                    {
                         world
                             .ctx
                             .get_mut_object(objs[1].0)
                             .state
                             .set(ObjectStateKey::Pos, pos2 + offset);
-                    } else if (!obj_static_body) && other_static_body {
+                    } else if other_collider_type == ObjectColliderType::Static
+                        && obj_collider_type == ObjectColliderType::Dynamic
+                    {
                         world
                             .ctx
                             .get_mut_object(objs[0].0)
                             .state
                             .set(ObjectStateKey::Pos, pos1 + offset);
                     } else {
-                        println!("aaaa {obj_static_body}+{other_static_body}")
+                        println!("aaaa {obj_collider_type:?}+{other_collider_type:?}")
                     }
                 }
             }

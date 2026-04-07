@@ -4,8 +4,7 @@ use crate::{
     components::battles::BattleAction,
     ctx::{ActionRef, AudioRef, FontRef, LocalTextRef, ObjectRef, SpriteRef},
     objs::{
-        Callbacks, Color, DialogueItemOnScreen, DisplayedText, Object, ObjectState, Offset2, Vec2,
-        World,
+        Callbacks, Color, DialogueItemOnScreen, DisplayedText, Object, ObjectColliderType, ObjectState, Offset2, Vec2, World
     },
     rt::KeyCode,
 };
@@ -100,10 +99,10 @@ impl Dialoguer {
 
         let mut obj = Object {
             collider: vec![],
-            static_body: true,
+            collider_type: ObjectColliderType::Area,
             sheet: None,
             state: ObjectState::new(),
-            callbacks: Some(Self::callbacks(interact, skip)),
+            callbacks: Self::callbacks(interact, skip),
         };
 
         let fref = world

@@ -19,8 +19,7 @@ use alloc::vec::Vec;
 use crate::{
     ctx::{ActionRef, AniSheetRef, Ctx, ObjectRef},
     objs::{
-        AniEvent, AniSheet, Animation, Callbacks, Collider, Direction, Object, ObjectState,
-        ObjectStateKey, Offset2, StateData, Vec2, World,
+        AniEvent, AniSheet, Animation, Callbacks, Collider, Direction, Object, ObjectColliderType, ObjectState, ObjectStateKey, Offset2, StateData, Vec2, World
     },
     rt::{Key, KeyCode},
 };
@@ -62,15 +61,13 @@ impl WorldCharacterBuilder {
         if self.is_player {
             let mut camera = Object {
                 collider: vec![],
-                static_body: true,
+                collider_type: ObjectColliderType::Area,
                 sheet: None,
                 state: ObjectState::new(),
-                callbacks: Some(Callbacks::new()),
+                callbacks: Callbacks::new(),
             };
             camera
                 .callbacks
-                .as_mut()
-                .unwrap()
                 .set(crate::objs::EventName::Tick, |_, args| {
                     let world = args.world;
                     let obj_r = args.obj.unwrap();
@@ -123,11 +120,15 @@ impl WorldCharacterBuilder {
                     off: Offset2::ZERO,
                 }]
             } else {
-                Vec::new()
+                vec![]
             },
-            static_body: false,
+            collider_type: if self.is_player {
+                ObjectColliderType::Dynamic
+            } else {
+                ObjectColliderType::Area
+            },
             state: ObjectState::new(),
-            callbacks: Some(Self::callbacks(
+            callbacks: Self::callbacks(
                 self.is_player,
                 self.is_lightner,
                 up,
@@ -135,7 +136,7 @@ impl WorldCharacterBuilder {
                 left,
                 right,
                 sprint,
-            )),
+            ),
         };
 
         obj.state.set(ObjectStateKey::Pos, Vec2::ZERO);
@@ -159,6 +160,8 @@ impl WorldCharacterBuilder {
         );
 
         world.extra_objs.push(oref);
+
+        world.player.push(oref);
 
         WorldCharacter(oref, self.is_player)
     }
@@ -286,6 +289,10 @@ impl WorldCharacterBuilder {
                     world.primary_player_history.pop_back();
                 }
 
+                crate::objs::EventResult::Default
+            });
+            out.set(crate::objs::EventName::PlayerEnter, move |_, args| {
+                args.world.primary_player_history.clear();
                 crate::objs::EventResult::Default
             });
         } else {

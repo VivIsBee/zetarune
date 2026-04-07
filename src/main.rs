@@ -1,4 +1,4 @@
-#![no_std]
+#![cfg_attr(target_os = "horizon", no_std)]
 //! Test game for zetarune
 
 extern crate alloc;
@@ -10,11 +10,12 @@ use zetarune::{
         world_npc::{self, WorldCharacterBuilder},
     },
     ctx::{Ctx, ObjectRef, RoomRef},
-    objs::{LanguageData, ObjectState, Room, World},
-    resources::{self, Provider},
+    objs::{Callbacks, Collider, EventName, EventResult, LanguageData, Object, ObjectColliderType, ObjectState, ObjectStateKey, Offset2, Room, Vec2, World},
+    resources::{self, Provider}, rt::{Key, KeyCode},
+    trace,
 };
 
-use alloc::{vec, string::ToString};
+use alloc::{string::ToString, vec};
 
 fn main() {
     let mut ctx = Ctx::new();
@@ -83,7 +84,7 @@ fn main() {
         placeholder_room,
         vec![],
         vec![],
-        None,
+        Callbacks::new(),
         ObjectState::new(),
         placeholder_camera,
         HashMap::new(),
@@ -101,6 +102,18 @@ fn main() {
         .state
         .set(zetarune::objs::ObjectStateKey::IsLight, false);
 
+    world.callbacks.set(EventName::KeyPress, move |ev, args| {
+        let ev = ev.unwrap_KeyPress();
+        let world = args.world;
+
+        if ev.key == Key::Keyboard(KeyCode::A) {
+            let name = world.ctx.get_room_id(world.current_room);
+            trace!("{name}");
+        }
+
+        EventResult::Default
+    });
+
     let obj2 = WorldCharacterBuilder::new(sheet2, false)
         .party_member(1)
         .create(&mut world)
@@ -111,18 +124,63 @@ fn main() {
         .create(&mut world)
         .add_to_party(&mut world);
 
-    let room = world.ctx.add_room(
-        "room01".to_string(),
-        Room {
-            background: None,
-            objects: vec![],
-            callbacks: None,
-            state: ObjectState::new(),
-            entrypoints: HashMap::new(),
-        },
-    );
+    let entry2 = world.ctx.add_placeholder_entrypoint("entry2".to_string());
 
-    world.current_room = room;
+    let mut mover = Object {
+        collider: vec![Collider { t: zetarune::objs::ColliderType::Rect { size: Offset2 { x: 2.0, y: 2.0 } }, off: Offset2::ZERO }],
+        collider_type: ObjectColliderType::Area,
+        sheet: Some(sheet1),
+        state: ObjectState::new(),
+        callbacks: Callbacks::new()
+    };
+
+    mover.state.set(ObjectStateKey::Animation, "u_dark");
+    mover.state.set(ObjectStateKey::AniFrame, 0usize);
+    mover.state.set(ObjectStateKey::Pos, Vec2 { x: 100.0, y: 0.0 });
+    mover.state.set(ObjectStateKey::Visible, true);
+    mover.state.set(ObjectStateKey::Scale, Offset2::ONE);
+    mover.state.set(ObjectStateKey::Processing, true);
+
+    mover.callbacks.set(EventName::PlayerCollide, move |ev, args| {
+        trace!("collision");
+        args.world.transition_room(entry2);
+
+        EventResult::Default
+    });
+
+    let mover = world.ctx.add_obj("mover".to_string(), mover);
+
+    let mut room1 = Room {
+        background: None,
+        objects: vec![mover],
+        callbacks: Callbacks::new(),
+        state: ObjectState::new(),
+        entrypoints: HashMap::new(),
+    };
+
+    let entry1 = world.ctx.add_placeholder_entrypoint("entry1".to_string());
+
+    room1.entrypoints.insert(entry1, Vec2::ZERO);
+
+    let room1 = world.ctx.add_room("room01".to_string(), room1);
+
+    world.ctx.fill_placeholder_entrypoint(entry1, room1);
+
+    world.current_room = room1;
+
+    let mut room2 = Room {
+        background: None,
+        objects: vec![],
+        callbacks: Callbacks::new(),
+        state: ObjectState::new(),
+        entrypoints: HashMap::new(),
+    };
+
+    room2.entrypoints.insert(entry2, Vec2::ZERO);
+
+    let room2 = world.ctx.add_room("room02".to_string(), room2);
+
+    world.ctx.fill_placeholder_entrypoint(entry2, room2);
 
     Dialoguer::new(&mut world);
 

@@ -946,6 +946,12 @@ impl<'a> TryFrom<&'a mut StateData> for &'a mut Option<Box<StateData>> {
     }
 }
 
+impl From<&str> for StateData {
+    fn from(value: &str) -> Self {
+        value.to_string().into()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ObjectStateKey {
     Pos,
@@ -1188,7 +1194,7 @@ pub struct World {
     /// entering a room. NOT loaded automatically, must be in extra_objs.
     pub player: Vec<ObjectRef>,
     pub room_transition: Option<ObjectRef>,
-    pub callbacks: Option<Callbacks>,
+    pub callbacks: Callbacks,
     pub state: ObjectState,
     pub camera_obj: ObjectRef,
     pub input_mappings: HashMap<Key, HashSet<ActionRef>>,
@@ -1245,7 +1251,7 @@ impl World {
         current_room: RoomRef,
         extra_objs: Vec<ObjectRef>,
         player: Vec<ObjectRef>,
-        callbacks: Option<Callbacks>,
+        callbacks: Callbacks,
         state: ObjectState,
         camera_obj: ObjectRef,
         input_mappings: HashMap<Key, HashSet<ActionRef>>,
@@ -1542,7 +1548,7 @@ pub struct Room {
     /// The sprite, location, and scale of the background.
     pub background: Option<(AnimationRef, Vec2, Offset2)>,
     pub objects: Vec<ObjectRef>,
-    pub callbacks: Option<Callbacks>,
+    pub callbacks: Callbacks,
     pub state: ObjectState,
     /// Entry points where the player will spawn when entering this room.
     pub entrypoints: HashMap<EntryRef, Vec2>,
@@ -1611,8 +1617,7 @@ event_enums!(
     /// Called at most 20 times a second; Default action will attempt to push it
     /// out to where it was at the previous frame before it started colliding.
     ///
-    /// Only triggered for when it's the player colliding with something, and triggered
-    /// instead of the regular Collide event.
+    /// Only triggered for when it's the player colliding with something.
     Event::PlayerCollide{..} => PlayerCollide {
         player: ObjectRef,
         other: ObjectRef,
@@ -1655,6 +1660,8 @@ event_enums!(
         choice: usize,
         dialoguer: Dialoguer,
     },
+    /// Sent to all objects in world.player when they are teleported as part of entering a room.
+    Event::PlayerEnter => PlayerEnter ;,
 );
 
 pub struct EventArgs<'a> {
@@ -1699,14 +1706,24 @@ impl Callbacks {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ObjectColliderType {
+    /// Ignored for collision.
+    #[default]
+    Area,
+    /// Never moved by the engine, but interacts with collision.
+    Static,
+    /// May be moved by the engine.
+    Dynamic,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Object {
     pub collider: Vec<Collider>,
-    /// If true, will never be moved by the engine (but may be by the game).
-    pub static_body: bool,
+    pub collider_type: ObjectColliderType,
     pub sheet: Option<AniSheetRef>,
     pub state: ObjectState,
-    pub callbacks: Option<Callbacks>,
+    pub callbacks: Callbacks,
 }
 
 impl Object {
